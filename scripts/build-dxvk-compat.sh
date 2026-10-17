@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix="build-", dir=build) as temporary:
              source / "src/d3d10/d3d10_core.cpp", source / "src/d3d10/d3d10core.def", resource, imports])
         shutil.copyfile(binaries / arch / "d3d11.dll", output / "d3d11.dll")
         metadata = subprocess.check_output([triple + "-objdump", "-p", output / "d3d10core.dll"], text=True)
-        (output / "pe-metadata.txt").write_text(metadata)
+        (output / "pe-metadata.txt").write_text(metadata.replace(str(output / "d3d10core.dll"), arch + "/d3d10core.dll"))
         if "D3D11CoreCreateDevice" not in metadata or "D3D10CoreCreateDevice" not in metadata:
             raise SystemExit("Built DLL lacks the expected D3D10 export or D3D11 import.")
 

@@ -27,7 +27,7 @@ swift test
 bash scripts/build.sh
 ```
 
-The debug build and default test suite need no Wine installation. Tests use temporary catalogs, prefixes and owned process fixtures. The two real-Wine integration tests are skipped unless explicitly enabled:
+The debug build and default test suite need no Wine installation. Tests use temporary catalogs, prefixes and owned process fixtures. The real-Wine integration tests are skipped unless explicitly enabled:
 
 ```sh
 PORTSIDE_TEST_WINE="$HOME/Library/Application Support/Portside/Runtimes/Wine Stable.app/Contents/Resources/wine/bin/wine" \
@@ -35,6 +35,18 @@ PORTSIDE_TEST_WINE="$HOME/Library/Application Support/Portside/Runtimes/Wine Sta
 ```
 
 Those tests create isolated temporary prefixes and exercise actual Wine loader failure and prefix-scoped stop/delete behavior. They do not install or interact with a third-party GUI application. Manual acceptance steps and recorded results are in [verification.md](verification.md).
+
+To exercise the optional compatibility helpers with real Wine, first build the data pack and app, then opt into the separate integration test:
+
+```sh
+bash scripts/build-compatibility-pack.sh
+bash scripts/build.sh
+PORTSIDE_TEST_WINE="$HOME/Library/Application Support/Portside/Runtimes/Wine Stable.app/Contents/Resources/wine/bin/wine" \
+PORTSIDE_TEST_COMPATIBILITY_RESOURCES="$PWD/dist/Portside.app/Contents/Resources/Compatibility" \
+  swift test --filter RealCompatibilityIntegrationTests
+```
+
+This creates disposable prefixes, applies the real pinned components and settings, checks persisted readiness and an unchanged control bottle, and repeats setup to verify that original backups remain intact. It does not download a game or certify the R2Beat launcher.
 
 Release outputs:
 
@@ -44,8 +56,11 @@ Release outputs:
 | `bash scripts/package-dmg.sh` | Rebuilt app, `dist/Portside-VERSION-macOS-ARCH.dmg`, and checksum sidecar |
 | `python3 scripts/package-source.py` | Public source only in `dist/Portside-VERSION-source.zip`, and checksum sidecar |
 | `bash scripts/build-dxvk-compat.sh` | Optional `.build/dxvk-compat/component/` and source-inclusive component archive in `dist/` |
+| `bash scripts/build-compatibility-pack.sh` | Optional graphics/font data pack for subsequent app/DMG builds |
 
 `build.sh` copies the Info.plist, icon, resource bundle, MIT license and dependency notice into the app, then ad-hoc signs it. Builds use the host architecture. The DMG script rebuilds the app before packaging; avoid copying `dist/Portside.app` while that script runs. Developer ID signing, notarization, and universal builds are not configured.
+
+Compatibility profile metadata and trusted Python helper source are bundled by the app build. A generated compatibility data pack is optional and remains outside the tracked source tree. The native runner discovers a suitable Python without a shell, executes only the bundled helper scripts with argument arrays, captures bounded output to a saved log, and reports partial installation honestly. The helpers enforce their pinned payload hashes, bottle ownership and stopped-state checks. Exact executable fingerprints select recommendations; filename heuristics do not select component installs. Python is not needed for the generic install-and-launch workflow.
 
 Run `python3 scripts/package-source.py --list` to review source archive inputs. The packager uses an explicit allowlist, excludes local history, artifacts, environment/signing files and compiled runtimes, and never follows symbolic links. Entries use sorted paths and fixed timestamps/permissions; unchanged inputs produce identical ZIPs with the same Python/zlib implementation. Application icons and branding assets are included as source inputs.
 
@@ -84,7 +99,7 @@ portside-cli settings BOTTLE_UUID win10|win11|win7 debug|quiet [system|en_US.UTF
 
 Quote terminal paths/names containing spaces. Arguments after `--` are saved literally; this terminal quoting differs from the frontend's one-argument-per-line editor. Registration defaults the working directory to the executable's parent if omitted.
 
-Successful operations emit JSON. Process commands emit separate started/finished objects, not one JSON document. Failures emit an error object on stderr and return status 1. Install/launch waits for the direct Wine launcher; background Windows processes can survive it. Use `stop` from another terminal to stop that bottle. Avoid simultaneous installation, configuration, or deletion in the same prefix.
+Successful operations emit JSON. Process commands emit separate started/finished objects, not one JSON document. Finished events preserve `exitCode`, include `terminationSignal` when terminated by a signal, and expose `wasStopped` for an intentional stop by that process manager. `succeeded` remains strict: a stopped installer is not a completed installation. Stop intent from another frontend/CLI instance cannot be inferred from signal 15 alone. Failures emit an error object on stderr and return status 1. Install/launch waits for the direct Wine launcher; background Windows processes can survive it. Use `stop` from another terminal to stop that bottle. Avoid simultaneous installation, configuration, or deletion in the same prefix.
 
 ## Environment and isolated diagnostics
 

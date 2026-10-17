@@ -15,7 +15,7 @@ public struct InstalledAppCandidate: Identifiable, Equatable, Sendable {
     }
 }
 
-/// A read-only search for reviewable GUI launchers, not a claim that an installer has finished.
+/// A read-only search for reviewable GUI executables, not a claim that an installer has finished.
 /// Call off the main actor with a bottle URL obtained from `LibraryStore.bottleURL(for:)`.
 /// Searches six folder levels in C:, excluding system and support folders. Manual registration
 /// remains available for user-profile installs, deeper layouts, console apps, and unusual launchers.
@@ -25,11 +25,6 @@ public enum InstalledAppDiscovery {
         var depth = 6
         var candidates = 200
         var seconds = 5.0
-    }
-    private struct Found {
-        let candidate: InstalledAppCandidate
-        let directory: URL
-        let score: Int
     }
     private static let systemFolders: Set<String> = ["windows", "users", "programdata", "$recycle.bin", "recovery"]
     private static let supportFolders: Set<String> = [
@@ -60,14 +55,8 @@ public enum InstalledAppDiscovery {
         }
         let registered = registeredApps.filter { $0.bottleID == bottle.id }
         let registeredPaths = Set(registered.map { $0.executableURL.standardizedFileURL.resolvingSymlinksInPath().path })
-        let registeredFolders = registered.compactMap { app -> URL? in
-            let executable = app.executableURL.standardizedFileURL.resolvingSymlinksInPath()
-            guard contains(executable, in: drive), !isHelper(executable) else { return nil }
-            let directory = installDirectory(for: executable, drive: drive)
-            return isContainer(directory, drive: drive) ? nil : directory
-        }
         var queue = [(drive, 0)], cursor = 0, visited = 0
-        var groups: [String: Found] = [:]
+        var candidates: [String: InstalledAppCandidate] = [:]
         let deadline = ContinuousClock.now.advanced(by: .seconds(limits.seconds))
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
         while cursor < queue.count {
@@ -96,32 +85,24 @@ public enum InstalledAppDiscovery {
                 if isDirectory {
                     let name = url.lastPathComponent.lowercased()
                     guard depth < limits.depth - 1, !(depth == 0 && systemFolders.contains(name)),
-                          !supportFolders.contains(name), !name.hasSuffix("_data"),
-                          !registeredFolders.contains(where: { $0 == url || contains(url, in: $0) }) else { continue }
+                          !supportFolders.contains(name), !name.hasSuffix("_data") else { continue }
                     queue.append((url, depth + 1))
                     continue
                 }
                 guard url.pathExtension.lowercased() == "exe", !isHelper(url), !registeredPaths.contains(url.path),
-                      !registeredFolders.contains(where: { contains(url, in: $0) }), isGUIExecutable(url) else { continue }
+                      isGUIExecutable(url) else { continue }
                 let group = installDirectory(for: url, drive: drive)
-                let name = isContainer(group, drive: drive) ? url.deletingPathExtension().lastPathComponent : group.lastPathComponent
+                let executableLabel = url.deletingPathExtension().pathComponents.dropFirst(group.pathComponents.count).joined(separator: "/")
+                let name = isContainer(group, drive: drive) || executableLabel.localizedCaseInsensitiveCompare(group.lastPathComponent) == .orderedSame
+                    ? executableLabel : "\(group.lastPathComponent) — \(executableLabel)"
                 let candidate = InstalledAppCandidate(name: name, executableURL: url,
                                                        workingDirectoryURL: url.deletingLastPathComponent(), bottleID: bottle.id)
-                let item = Found(candidate: candidate, directory: group, score: score(url, directory: group))
-                let key = isContainer(group, drive: drive) ? candidate.id : group.path
-                if groups[key] == nil || item.score > groups[key]!.score { groups[key] = item }
-                guard groups.count <= limits.candidates else { throw limitError("candidate-count") }
+                candidates[candidate.id] = candidate
+                guard candidates.count <= limits.candidates else { throw limitError("candidate-count") }
             }
         }
-        let roots = Array(groups.values)
-        let result = roots.filter { item in
-            !roots.contains { other in
-                other.candidate.id != item.candidate.id && !isContainer(other.directory, drive: drive) &&
-                    contains(item.directory, in: other.directory)
-            }
-        }.map(\.candidate).sorted { $0.id < $1.id }
         guard ContinuousClock.now < deadline else { throw limitError("time") }
-        return result
+        return candidates.values.sorted { $0.id < $1.id }
     }
 
     private static func contains(_ child: URL, in parent: URL) -> Bool {
@@ -146,14 +127,6 @@ public enum InstalledAppDiscovery {
         return ["unins", "uninstall", "setup", "install", "redist", "vcredist", "dxsetup", "ndp"].contains(where: name.hasPrefix) ||
             ["installer", "downloader", "crash", "helper", "subprocess", "vc_redist"].contains(where: name.contains) ||
             ["update", "updater", "config", "configuration", "settings", "autorun", "elevate", "notification"].contains(name)
-    }
-    private static func score(_ url: URL, directory: URL) -> Int {
-        let name = url.deletingPathExtension().lastPathComponent.lowercased()
-        if name.contains("launcher") { return 100 }
-        if name.contains("patcher") { return 90 }
-        if name == directory.lastPathComponent.lowercased() { return 80 }
-        if ["game", "client", "main", "start", "play"].contains(name) { return 70 }
-        return 50
     }
     private static func isGUIExecutable(_ url: URL) -> Bool {
         guard (try? PEExecutable.validate(url: url)) != nil, let file = try? FileHandle(forReadingFrom: url) else { return false }

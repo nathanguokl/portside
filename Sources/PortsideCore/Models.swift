@@ -121,6 +121,14 @@ public struct RunningWineProcess: Identifiable, Sendable {
     public let logURL: URL
     public let startedAt: Date
     public let pid: Int32
+    /// A wait-only Wine session observer, rather than an application or setup command.
+    public let isSessionWatcher: Bool
+
+    public init(id: UUID, bottleID: UUID, kind: String, logURL: URL, startedAt: Date, pid: Int32,
+                isSessionWatcher: Bool = false) {
+        self.id = id; self.bottleID = bottleID; self.kind = kind; self.logURL = logURL
+        self.startedAt = startedAt; self.pid = pid; self.isSessionWatcher = isSessionWatcher
+    }
 }
 
 public struct ProcessResult: Identifiable, Sendable {
@@ -135,10 +143,30 @@ public struct ProcessResult: Identifiable, Sendable {
     public let summary: String
     /// True for the `wineserver -w` processes that watch a bottle's Windows session, not for user-requested work.
     public let isSessionWatcher: Bool
-    public var succeeded: Bool { exitCode == 0 && !timedOut }
+    /// The actual terminating signal, if Foundation reported a signal rather than a normal exit.
+    /// `exitCode` retains the raw status for diagnostics, including for stopped processes.
+    public let terminationSignal: Int32?
+    /// Portside requested this process's terminating signal during Stop Bottle.
+    /// This is a neutral cancellation, not successful completion of the Windows app.
+    public let wasStopped: Bool
+    public var succeeded: Bool { exitCode == 0 && terminationSignal == nil && !timedOut && !wasStopped }
+    public var failed: Bool { !succeeded && !wasStopped }
+
+    public init(id: UUID, bottleID: UUID, kind: String, logURL: URL, startedAt: Date, finishedAt: Date,
+                exitCode: Int32, timedOut: Bool, summary: String, isSessionWatcher: Bool,
+                terminationSignal: Int32? = nil, wasStopped: Bool = false) {
+        self.id = id; self.bottleID = bottleID; self.kind = kind; self.logURL = logURL
+        self.startedAt = startedAt; self.finishedAt = finishedAt; self.exitCode = exitCode
+        self.timedOut = timedOut; self.summary = summary; self.isSessionWatcher = isSessionWatcher
+        self.terminationSignal = terminationSignal
+        self.wasStopped = wasStopped && !timedOut
+    }
 
     /// Throws the failure that the app and CLI report: the summary plus the log to inspect.
     public func requireSuccess() throws {
-        guard succeeded else { throw PortsideError.commandFailed("\(summary) Log: \(logURL.path)") }
+        guard succeeded else {
+            let detail = summary.contains(logURL.path) ? summary : "\(summary) Log: \(logURL.path)"
+            throw PortsideError.commandFailed(detail)
+        }
     }
 }

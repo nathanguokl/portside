@@ -24,19 +24,19 @@ final class InstalledAppDiscoveryTests: XCTestCase {
         return exe.standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    @MainActor func testDiscoversCommonAndCustomRootsAndPrefersLauncherOverGame() throws {
+    @MainActor func testDiscoversCommonCustomAndNestedGUIExecutablesWithoutChoosingOneForTheUser() throws {
         let (store, bottle, drive) = try fixture()
         let zip = try gui("Program Files/7-Zip/7zFM.exe", drive: drive)
         let editor = try gui("Program Files (x86)/Acme/Editor/Editor.exe", drive: drive)
         let custom = try gui("Portside 测试/7-Zip/7zFM.exe", drive: drive)
         let launcher = try gui("XYX/R2beat_XYX/VLauncher.exe", drive: drive)
-        try gui("XYX/R2beat_XYX/Game.exe", drive: drive)
-        try gui("XYX/R2beat_XYX/miniGame/MiniGames.exe", drive: drive)
+        let client = try gui("XYX/R2beat_XYX/Game.exe", drive: drive)
+        let mini = try gui("XYX/R2beat_XYX/miniGame/MiniGames.exe", drive: drive)
         try gui("xiyouxidownlad/r2beat/R2beat_XYX_installer.exe", drive: drive)
         let result = try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: store.bottleURL(for: bottle), registeredApps: [])
-        XCTAssertEqual(Set(result.map(\.executableURL)), Set([zip, editor, custom, launcher]))
+        XCTAssertEqual(Set(result.map(\.executableURL)), Set([zip, editor, custom, launcher, client, mini]))
         let game = try XCTUnwrap(result.first { $0.executableURL == launcher })
-        XCTAssertEqual(game.name, "R2beat_XYX")
+        XCTAssertEqual(game.name, "R2beat_XYX — VLauncher")
         XCTAssertEqual(game.workingDirectoryURL, launcher.deletingLastPathComponent())
         XCTAssertEqual(game.bottleID, bottle.id)
         XCTAssertEqual(game.id, launcher.path)
@@ -66,18 +66,48 @@ final class InstalledAppDiscoveryTests: XCTestCase {
         XCTAssertEqual(try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: store.bottleURL(for: bottle), registeredApps: []).map(\.executableURL), [main])
     }
 
-    @MainActor func testGroupsBinaryFoldersAndSuppressesRegisteredSecondaryExecutables() throws {
+    @MainActor func testRegisteredLauncherDoesNotHideSiblingGameOrNestedExecutables() throws {
         let (store, bottle, drive) = try fixture()
         let launcher = try gui("Publisher/Game/Launcher.exe", drive: drive)
-        try gui("Publisher/Game/Binaries/Win64/Game.exe", drive: drive)
-        try gui("Publisher/Game/miniGame/Game.exe", drive: drive)
+        let client = try gui("Publisher/Game/Game.exe", drive: drive)
+        let binary = try gui("Publisher/Game/Binaries/Win64/Game.exe", drive: drive)
+        let mini = try gui("Publisher/Game/miniGame/Game.exe", drive: drive)
         let directory = try store.bottleURL(for: bottle)
         let first = try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: directory, registeredApps: [])
-        XCTAssertEqual(first.map(\.executableURL), [launcher])
+        XCTAssertEqual(Set(first.map(\.executableURL)), Set([launcher, client, binary, mini]))
+        XCTAssertEqual(Set(first.map(\.name)).count, first.count)
         let saved = WindowsApp(name: "Saved Game", executablePath: launcher.path, workingDirectory: launcher.deletingLastPathComponent().path, arguments: ["--saved"], bottleID: bottle.id)
-        XCTAssertTrue(try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: directory, registeredApps: [saved]).isEmpty)
+        let remaining = try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: directory, registeredApps: [saved, saved])
+        XCTAssertEqual(Set(remaining.map(\.executableURL)), Set([client, binary, mini]),
+                       "Registering the launcher excludes that exact executable, not its installation folder")
         var otherBottleEntry = saved; otherBottleEntry.bottleID = UUID()
         XCTAssertEqual(try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: directory, registeredApps: [otherBottleEntry]), first)
+    }
+
+    @MainActor func testSuiteAppsAndArchitectureVariantsRemainDistinctAfterRegisteringOne() throws {
+        let (store, bottle, drive) = try fixture()
+        let word = try gui("Program Files/Suite/Word.exe", drive: drive)
+        let sheet = try gui("Program Files/Suite/Spreadsheet.exe", drive: drive)
+        let x86 = try gui("Program Files/Suite/bin/x86/Editor.exe", drive: drive)
+        let x64 = try gui("Program Files/Suite/bin/x64/Editor.exe", drive: drive)
+        let saved = try store.registerApp(name: "Word", executableURL: word, bottleID: bottle.id)
+        let catalogBefore = try Data(contentsOf: store.stateURL)
+        let prefix = try store.bottleURL(for: bottle)
+        let all = try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: prefix, registeredApps: [])
+        XCTAssertEqual(Set(all.map(\.executableURL)), Set([word, sheet, x86, x64]))
+        XCTAssertEqual(Set(all.map(\.name)), Set(["Suite — Word", "Suite — Spreadsheet", "Suite — bin/x86/Editor", "Suite — bin/x64/Editor"]))
+
+        var anotherRegistration = saved
+        anotherRegistration.id = UUID(); anotherRegistration.arguments = ["--another-launch-mode"]
+        let alias = drive.appendingPathComponent("Word alias.exe")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: word)
+        var aliasRegistration = saved; aliasRegistration.id = UUID(); aliasRegistration.executablePath = alias.path
+        let result = try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: prefix,
+                                                        registeredApps: [saved, anotherRegistration, aliasRegistration])
+        XCTAssertEqual(Set(result.map(\.executableURL)), Set([sheet, x86, x64]))
+        XCTAssertEqual(Set(result.map(\.name)).count, result.count)
+        XCTAssertEqual(result, try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: prefix, registeredApps: [saved]))
+        XCTAssertEqual(try Data(contentsOf: store.stateURL), catalogBefore, "Discovery must not alter existing registrations")
     }
 
     @MainActor func testRegisteredDownloaderDoesNotHideInstalledAppInSameFolder() throws {
@@ -97,6 +127,22 @@ final class InstalledAppDiscoveryTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: drive.appendingPathComponent("Linked.exe"), withDestinationURL: host)
         try FileManager.default.createSymbolicLink(at: drive.appendingPathComponent("Loop"), withDestinationURL: drive)
         XCTAssertEqual(try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: store.bottleURL(for: bottle), registeredApps: []).map(\.executableURL), [app])
+    }
+
+    @MainActor func testRegisteredAppDoesNotAllowHelpersOrProtectedPathsInItsFolderTree() throws {
+        let (store, bottle, drive) = try fixture()
+        let launcher = try gui("Product/Launcher.exe", drive: drive)
+        let client = try gui("Product/Game.exe", drive: drive)
+        let saved = try store.registerApp(name: "Launcher", executableURL: launcher, bottleID: bottle.id)
+        for path in ["Product/helper.exe", "Product/CrashReporter.exe", "Product/redist/Tool.exe", "Product/assets/Tool.exe", "windows/Unrelated.exe"] {
+            try gui(path, drive: drive)
+        }
+        let outside = try temporaryDirectory("Outside discovery")
+        let host = try gui("Host.exe", drive: outside)
+        try FileManager.default.createSymbolicLink(at: drive.appendingPathComponent("Product/Linked.exe"), withDestinationURL: host)
+        try FileManager.default.createSymbolicLink(at: drive.appendingPathComponent("Product/Outside"), withDestinationURL: outside)
+        let result = try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: store.bottleURL(for: bottle), registeredApps: [saved])
+        XCTAssertEqual(result.map(\.executableURL), [client])
     }
 
     @MainActor func testRejectsSymlinkDriveAndUninitializedBottle() throws {
@@ -138,6 +184,17 @@ final class InstalledAppDiscoveryTests: XCTestCase {
                 XCTAssertTrue(error.localizedDescription.contains("limit"))
                 XCTAssertTrue(error.localizedDescription.contains("Add Manually"))
             }
+        }
+    }
+
+    @MainActor func testCandidateLimitCountsGUIExecutablesSharingOneFolder() throws {
+        let (store, bottle, drive) = try fixture()
+        try gui("Suite/Word.exe", drive: drive)
+        try gui("Suite/Spreadsheet.exe", drive: drive)
+        XCTAssertThrowsError(try InstalledAppDiscovery.scan(bottle: bottle, bottleURL: store.bottleURL(for: bottle),
+                                                           registeredApps: [], limits: .init(candidates: 1))) { error in
+            XCTAssertTrue(error.localizedDescription.contains("candidate-count"))
+            XCTAssertTrue(error.localizedDescription.contains("Add Manually"))
         }
     }
 

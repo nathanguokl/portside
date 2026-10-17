@@ -194,6 +194,12 @@ final class PortsideCoreTests: XCTestCase {
     }
 
     @MainActor func testArgumentsRemainLiteralAndFailedLaunchHasUsefulLog() async throws {
+        let previousPrivateLocale = ProcessInfo.processInfo.environment["LC_PORTSIDE_PRIVATE"]
+        setenv("LC_PORTSIDE_PRIVATE", "private-fixture-sentinel", 1)
+        defer {
+            if let previousPrivateLocale { setenv("LC_PORTSIDE_PRIVATE", previousPrivateLocale, 1) }
+            else { unsetenv("LC_PORTSIDE_PRIVATE") }
+        }
         let root = try temporaryDirectory()
         let runtime = try fakeRuntime(in: root, wineBody: "printf 'ARG=%s\\n' \"$@\"\nprintf 'PREFIX=%s\\n' \"$WINEPREFIX\"\nexit 7\n")
         let store = try LibraryStore(rootURL: root.appendingPathComponent("Support 日本語"))
@@ -214,6 +220,23 @@ final class PortsideCoreTests: XCTestCase {
         for argument in args { XCTAssertTrue(log.contains("ARG=\(argument)\n")) }
         XCTAssertTrue(log.contains("PREFIX=\(bottleURL.path)\n"))
         XCTAssertTrue(log.contains("exit code 7"))
+        let metadataText = try XCTUnwrap(log.components(separatedBy: "\n--- Wine output ---\n").first)
+        let jsonStart = try XCTUnwrap(metadataText.firstIndex(of: "{"))
+        let metadata = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(metadataText[jsonStart...].utf8)) as? [String: Any])
+        let environment = try XCTUnwrap(metadata["environment"] as? [String: String])
+        XCTAssertEqual(environment["WINEPREFIX"], bottleURL.path)
+        XCTAssertEqual(environment["WINEARCH"], "win64")
+        XCTAssertEqual(environment["WINEDEBUG"], "-all,err+all")
+        XCTAssertEqual(environment["PATH"], RuntimeManager.environment(runtime: runtime, bottleURL: bottleURL)["PATH"])
+        XCTAssertNil(environment["HOME"], "Logs must not dump the complete inherited environment")
+        XCTAssertNil(environment["PORTSIDE_HOME"])
+        XCTAssertNil(environment["LC_PORTSIDE_PRIVATE"], "Only explicit locale controls belong in diagnostic logs")
+        XCTAssertFalse(log.contains("private-fixture-sentinel"))
+        let settings = try XCTUnwrap(metadata["bottleSettings"] as? [String: Any])
+        XCTAssertEqual(settings["windowsVersion"] as? String, "win10")
+        XCTAssertEqual(settings["locale"] as? String, "system")
+        XCTAssertEqual(metadata["workingDirectory"] as? String, root.path)
+        XCTAssertEqual(metadata["arguments"] as? [String], [exe.path] + args)
         XCTAssertFalse(FileManager.default.fileExists(atPath: sentinel.path))
         let cachedResult = await processes.waitForExit(id: launched.id)
         XCTAssertEqual(cachedResult?.id, result?.id)
@@ -392,6 +415,7 @@ final class PortsideCoreTests: XCTestCase {
         let root = try temporaryDirectory()
         let runtime = try fakeRuntime(in: root, serverBody: """
         if [ "$1" = '-k' ]; then exit 1; fi
+        printf '%s\\n' 'Native Crash Reporting' 'fatal error in the mono runtime'
         exec /bin/sleep 30
         """)
         let store = try LibraryStore(rootURL: root.appendingPathComponent("Support"))
@@ -407,5 +431,9 @@ final class PortsideCoreTests: XCTestCase {
         let result = try XCTUnwrap(processes.completed.first)
         XCTAssertTrue(result.timedOut)
         XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(result.terminationSignal, SIGTERM)
+        XCTAssertFalse(result.wasStopped, "Timeout termination must stay a failure")
+        XCTAssertTrue(result.failed)
+        XCTAssertFalse(result.summary.contains("Wine Mono reported"), "Timeout remains the diagnosis even if a command printed a Mono report")
     }
 }

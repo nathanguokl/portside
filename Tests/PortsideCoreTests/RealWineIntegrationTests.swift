@@ -1,9 +1,50 @@
 import XCTest
+import Darwin
 @testable import PortsideCore
 
 /// Opt in with PORTSIDE_TEST_WINE=/absolute/path/to/bin/wine. Every Wine operation
 /// uses a new temporary WINEPREFIX; the normal Application Support catalog is never opened.
 final class RealWineIntegrationTests: XCTestCase {
+    @MainActor func testStoppedRealWineLauncherIsNeutralAndPreservesSignal() async throws {
+        guard let winePath = ProcessInfo.processInfo.environment["PORTSIDE_TEST_WINE"], !winePath.isEmpty else {
+            throw XCTSkip("Set PORTSIDE_TEST_WINE to run against a real macOS Wine installation.")
+        }
+        let root = try temporaryDirectory("Portside Real Stop Outcome 空間")
+        let store = try LibraryStore(rootURL: root.appendingPathComponent("Support"))
+        let runtime = try await RuntimeManager.validate(wineURL: URL(fileURLWithPath: winePath), source: "Real stop outcome fixture")
+        let bottle = try store.createBottle(name: "Disposable Windows Notepad", runtime: runtime)
+        let prefix = try store.bottleURL(for: bottle)
+        let manager = WineProcessManager(logsURL: store.logsURL)
+        defer { manager.shutdownStatusWatchers() }
+        do {
+            _ = try await manager.initialize(bottle: bottle, bottleURL: prefix)
+            let notepad = prefix.appendingPathComponent("drive_c/windows/system32/notepad.exe")
+            let app = try manager.run(bottle: bottle, bottleURL: prefix, executableURL: notepad,
+                                      kind: "Disposable Windows Notepad")
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            XCTAssertFalse(manager.completed.contains { $0.id == app.id }, "The builtin must remain active until this test requests Stop")
+            _ = try await manager.stopBottle(bottle: bottle, bottleURL: prefix)
+            let result = try XCTUnwrap(manager.completed.first { $0.id == app.id })
+            XCTAssertTrue(result.wasStopped)
+            XCTAssertFalse(result.succeeded)
+            XCTAssertFalse(result.failed)
+            XCTAssertTrue([SIGTERM, SIGKILL].contains(result.exitCode))
+            XCTAssertEqual(result.terminationSignal, result.exitCode)
+            XCTAssertFalse(manager.isBottleRunning(bottle.id))
+            if let artifacts = ProcessInfo.processInfo.environment["PORTSIDE_INTEGRATION_ARTIFACTS"] {
+                let destination = URL(fileURLWithPath: artifacts).appendingPathComponent("stopped-launcher")
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                for log in try FileManager.default.contentsOfDirectory(at: store.logsURL, includingPropertiesForKeys: nil) {
+                    try FileManager.default.copyItem(at: log, to: destination.appendingPathComponent(log.lastPathComponent))
+                }
+            }
+            print("Real Wine builtin stopped neutrally with signal \(result.exitCode); runtime \(runtime.version)")
+        } catch {
+            _ = try? await manager.stopBottle(bottle: bottle, bottleURL: prefix)
+            throw error
+        }
+    }
+
     @MainActor func testStopIsRepeatableAndOnlyStopsTheSelectedRealWineBottle() async throws {
         guard let winePath = ProcessInfo.processInfo.environment["PORTSIDE_TEST_WINE"], !winePath.isEmpty else {
             throw XCTSkip("Set PORTSIDE_TEST_WINE to run against a real macOS Wine installation.")

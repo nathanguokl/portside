@@ -111,6 +111,7 @@ private final class ScanProbe: @unchecked Sendable {
         model.requestInstalledAppDiscovery()
         try await eventually { model.installedAppCandidates.count == 1 }
         model.addDiscoveredApp(found, launchAfterAdding: true)
+        try await eventually { !model.busy && model.logURL != nil }
         XCTAssertEqual(model.state.apps.count, 2)
         XCTAssertTrue(model.logText.contains(found.executableURL.path))
         XCTAssertFalse(model.logText.contains(downloader.path))
@@ -230,6 +231,7 @@ private final class ScanProbe: @unchecked Sendable {
                                                                bottleID: bottle.id, workingDirectory: root, arguments: ["saved argument 中文"])
         model.addDiscoveredApp(found, launchAfterAdding: true)
         XCTAssertEqual(model.state.apps.map(\.id), [app.id])
+        try await eventually { !model.busy && model.logURL != nil }
         XCTAssertTrue(model.logText.contains("saved argument 中文"))
         XCTAssertTrue(model.logText.contains(root.path))
     }
@@ -266,6 +268,36 @@ private final class ScanProbe: @unchecked Sendable {
         XCTAssertNil(model.logURL)
     }
 
+    func testManualEmptySearchDistinguishesSavedAppsWithoutLaunchingThem() async throws {
+        let root = try scratch(), wine = try runtime(root), library = root.appendingPathComponent("Library")
+        let store = try LibraryStore(rootURL: library)
+        let empty = try bottle(store, runtime: wine, name: "Empty")
+        let saved = try bottle(store, runtime: wine, name: "Saved application")
+        let found = try candidate(store, bottle: saved)
+        let app = try store.registerApp(name: found.name, executableURL: found.executableURL, bottleID: saved.id)
+        let model = AppModel(rootURL: library, startsBackgroundWork: false, installedAppScanner: { _, _, _ in [] })
+        defer { model.cancelInstalledAppDiscovery(); model.processes?.shutdownStatusWatchers() }
+
+        model.selected = empty.id
+        model.requestInstalledAppDiscovery(userInitiated: true)
+        try await eventually { model.installedDiscoveryMessage != nil }
+        XCTAssertTrue(model.installedDiscoveryMessage?.contains("Add Manually") == true,
+                      "Another bottle's saved entry must not hide manual-registration guidance")
+
+        model.selected = saved.id
+        model.requestInstalledAppDiscovery(userInitiated: true)
+        try await eventually { model.installedDiscoveryMessage != nil }
+        XCTAssertEqual(model.installedDiscoveryMessage, "No additional launchers found. Your saved apps are listed below.")
+        XCTAssertEqual(model.state.apps, [app])
+        XCTAssertTrue(model.installedAppCandidates.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(model.processes).running.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(model.processes).completed.isEmpty)
+        XCTAssertNil(model.logURL)
+        XCTAssertNil(model.sheet)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(try LibraryStore(rootURL: library).state.apps, [app])
+    }
+
     func testApplicationCompletionRequestsReviewWithoutAutomaticallyRegistering() async throws {
         try await verifyAutomaticReview(triggerWithRunningStatus: false)
     }
@@ -286,10 +318,17 @@ private final class ScanProbe: @unchecked Sendable {
         try await eventually { probe.count(bottle.id) >= 1 && !model.isDiscoveringInstalledApps }
         let initialCount = probe.count(bottle.id)
         probe.setResults([found], for: bottle.id)
-        if triggerWithRunningStatus { model.processes?.onCompletion = nil }
+        if triggerWithRunningStatus {
+            model.processes?.onCompletion = nil
+            // Recognition is asynchronous. Keep this owned fixture alive long
+            // enough to observe a running app after the launch task yields.
+            try Data("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'wine-fixture\\n'; else sleep 1; fi\nexit 0\n".utf8)
+                .write(to: wine.wineURL)
+        }
         let setup = root.appendingPathComponent("downloader.exe")
         try executable(setup)
         try model.runExternalExecutable(setup, bottleID: bottle.id, remember: false)
+        try await eventually { !model.busy && model.logURL != nil }
         if triggerWithRunningStatus {
             XCTAssertTrue(model.isRunning(bottle))
             model.discoverWhileBottleIsRunning()

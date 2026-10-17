@@ -11,7 +11,7 @@ import PortsideCore
         let executable: URL
     }
 
-    private func fixture() throws -> Fixture {
+    private func fixture(wine: String? = nil) throws -> Fixture {
         let files = FileManager.default
         let root = files.temporaryDirectory.appendingPathComponent("Portside stop controls \(UUID().uuidString) 空間")
         try files.createDirectory(at: root, withIntermediateDirectories: true)
@@ -19,7 +19,7 @@ import PortsideCore
         let bin = root.appendingPathComponent("Fixture Runtime/bin")
         try files.createDirectory(at: bin, withIntermediateDirectories: true)
         let commands = [
-            "wine": "printf 'ready' > \"$WINEPREFIX/launcher-ready\"\nexec /bin/sleep 30",
+            "wine": wine ?? "printf 'ready' > \"$WINEPREFIX/launcher-ready\"\nexec /bin/sleep 30",
             "wineboot": "exit 0",
             "wineserver": "printf '%s\\n' \"$1\" >> \"$WINEPREFIX/server-commands.txt\"\nif [ \"$1\" = '-k' ]; then exit 1; fi\nexit 0"
         ]
@@ -185,6 +185,12 @@ import PortsideCore
         XCTAssertNil(model.error)
         let completed = try XCTUnwrap(model.processes).completed
         XCTAssertTrue(completed.contains { $0.kind == "Stop bottle" && $0.succeeded })
+        let stopped = try XCTUnwrap(completed.first { $0.id == run.id })
+        XCTAssertTrue(stopped.wasStopped)
+        XCTAssertFalse(stopped.succeeded, "Stopping an app does not mean its work completed successfully")
+        XCTAssertFalse(stopped.failed)
+        XCTAssertEqual(stopped.terminationSignal, SIGTERM)
+        XCTAssertFalse(stopped.summary.contains("Windows dependencies"))
         XCTAssertEqual(try String(contentsOf: prefix.appendingPathComponent("server-commands.txt"), encoding: .utf8), "-k\n-w\n")
         let before = try logs(fixture)
 
@@ -193,5 +199,31 @@ import PortsideCore
         XCTAssertEqual(try logs(fixture), before)
         XCTAssertEqual(try XCTUnwrap(model.processes).completed.map(\.id), completed.map(\.id))
         XCTAssertNil(model.activity)
+    }
+
+    func testNormalExit15StillShowsALaunchFailure() async throws {
+        let fixture = try fixture(wine: "exit 15")
+        defer { cleanup(fixture) }
+        let run = try startLauncher(fixture)
+        let result = await fixture.model.processes?.waitForExit(id: run.id)
+        XCTAssertEqual(result?.exitCode, 15)
+        XCTAssertNil(result?.terminationSignal)
+        XCTAssertEqual(result?.wasStopped, false)
+        XCTAssertEqual(result?.failed, true)
+        XCTAssertTrue(fixture.model.error?.contains("code 15") == true)
+    }
+
+    func testUnrequestedSignal15StillShowsALaunchFailure() async throws {
+        let fixture = try fixture()
+        defer { cleanup(fixture) }
+        let run = try startLauncher(fixture)
+        let prefix = try prefix(fixture)
+        try await eventually { FileManager.default.fileExists(atPath: prefix.appendingPathComponent("launcher-ready").path) }
+        XCTAssertEqual(kill(run.pid, SIGTERM), 0)
+        let result = await fixture.model.processes?.waitForExit(id: run.id)
+        XCTAssertEqual(result?.terminationSignal, SIGTERM)
+        XCTAssertEqual(result?.wasStopped, false)
+        XCTAssertEqual(result?.failed, true)
+        XCTAssertTrue(fixture.model.error?.lowercased().contains("signal 15") == true)
     }
 }

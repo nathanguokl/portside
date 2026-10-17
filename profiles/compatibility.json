@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "generic-graphics",
+      "title": "Direct3D 10 / 11 graphics",
+      "summary": "Install the pinned DXVK macOS component in this bottle.",
+      "components": ["dxvk-macos"],
+      "windowsVersion": "win10",
+      "limitations": ["Requires a compatible external Wine runtime and MoltenVK. Direct3D 9 and 12 are not provided."]
+    },
+    {
+      "id": "simplified-chinese",
+      "title": "Simplified Chinese text",
+      "summary": "Install Noto Sans CJK SC and use the Simplified Chinese locale in this bottle.",
+      "components": ["noto-cjk-sc"],
+      "windowsVersion": "win10",
+      "locale": "zh_CN.UTF-8",
+      "limitations": ["Fonts and locale settings do not translate an application's own text."]
+    },
+    {
+      "id": "r2beat-downloader",
+      "title": "R2Beat downloader",
+      "summary": "Prepare graphics and Chinese text for the verified publisher downloader.",
+      "components": ["dxvk-macos", "noto-cjk-sc"],
+      "windowsVersion": "win10",
+      "locale": "zh_CN.UTF-8",
+      "executableSHA256": ["1655e25f7ae84ea0b7ec001cfa5d237cded583341b892d3a44fecdf98118530a"],
+      "executableSize": 664472,
+      "publisherURL": "https://r2beat.xiyouxi.com/download",
+      "limitations": ["Downloader compatibility does not establish game compatibility.", "The game launcher's Mono / .NET crash and anti-cheat compatibility are not fixed by this setup."]
+    }
+  ]
+}

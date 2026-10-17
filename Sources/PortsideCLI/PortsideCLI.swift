@@ -201,7 +201,8 @@ struct PortsideCLI {
 
     private static func resultOutput(_ result: ProcessResult) -> ResultOutput {
         ResultOutput(event: "finished", id: result.id, bottleID: result.bottleID, kind: result.kind,
-                     exitCode: result.exitCode, timedOut: result.timedOut, succeeded: result.succeeded,
+                     exitCode: result.exitCode, terminationSignal: result.terminationSignal, wasStopped: result.wasStopped,
+                     timedOut: result.timedOut, succeeded: result.succeeded,
                      log: result.logURL.path, summary: result.summary, startedAt: result.startedAt, finishedAt: result.finishedAt)
     }
 
@@ -212,7 +213,8 @@ struct PortsideCLI {
     private struct RunningOutput: Encodable { let event: String; let id: UUID; let bottleID: UUID; let kind: String; let pid: Int32; let log: String }
     private struct ResultOutput: Encodable {
         let event: String; let id: UUID; let bottleID: UUID; let kind: String
-        let exitCode: Int32; let timedOut: Bool; let succeeded: Bool; let log: String; let summary: String
+        let exitCode: Int32; let terminationSignal: Int32?; let wasStopped: Bool
+        let timedOut: Bool; let succeeded: Bool; let log: String; let summary: String
         let startedAt: Date; let finishedAt: Date
     }
     private struct UsageError: LocalizedError {

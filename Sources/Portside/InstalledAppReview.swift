@@ -131,7 +131,9 @@ enum LibraryEntryPresentation {
             installedAppCandidates = candidates.filter { $0.bottleID == bottleID }
             pruneRegisteredDiscoveryCandidates()
             if userInitiated, installedAppCandidates.isEmpty {
-                installedDiscoveryMessage = "No new app launchers found. If installation is still running, wait and try again, or choose its installed .exe with Add Manually."
+                installedDiscoveryMessage = state.apps.contains { $0.bottleID == bottleID }
+                    ? "No additional launchers found. Your saved apps are listed below."
+                    : "No new app launchers found. If installation is still running, wait and try again, or choose its installed .exe with Add Manually."
             }
         } catch {
             installedAppCandidates = []

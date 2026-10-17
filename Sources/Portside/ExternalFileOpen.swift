@@ -73,7 +73,7 @@ struct ExternalOpenRequest {
     }
 
     func openFiles(_ urls: [URL]) {
-        let current = externalOpen?.url.standardizedFileURL.resolvingSymlinksInPath()
+        let current = (externalOpen?.url ?? compatibilityLaunch?.executableURL)?.standardizedFileURL.resolvingSymlinksInPath()
         for url in urls {
             let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
             guard canonical != current, !queuedOpenURLs.contains(canonical) else { continue }
@@ -89,13 +89,14 @@ struct ExternalOpenRequest {
             // Let a dismissing sheet and any catalog update finish before showing the next file.
             await Task.yield()
             fileDrainScheduled = false
+            presentPendingCompatibilityLaunch()
             drainOpenFiles()
             startPendingInstalledDiscoveryIfPossible()
         }
     }
 
     private func drainOpenFiles() {
-        guard !busy, !hasModalPresentation, sheet == nil, externalOpen == nil, error == nil else { return }
+        guard !busy, !hasModalPresentation, sheet == nil, externalOpen == nil, compatibilityLaunch == nil, error == nil else { return }
         while !queuedOpenURLs.isEmpty {
             let url = queuedOpenURLs[0]
             do {
@@ -118,9 +119,10 @@ struct ExternalOpenRequest {
                 case .registered(let app):
                     selected = app.bottleID
                     launch(app)
-                    if error != nil { return }
+                    return
                 case .bottle(let bottle):
                     try runExternalExecutable(url, bottleID: bottle.id, remember: false)
+                    return
                 case .chooseBottle, .chooseRegistration:
                     externalOpen = ExternalOpenRequest(url: url, action: action)
                     sheet = .openExecutable
@@ -134,26 +136,14 @@ struct ExternalOpenRequest {
     }
 
     func runExternalExecutable(_ url: URL, bottleID: UUID, remember: Bool) throws {
-        guard let store, let processes else { throw PortsideError.persistence("The library is unavailable.") }
+        guard !busy, compatibilityLaunch == nil else { throw PortsideError.commandFailed("Another application is being prepared. Finish or cancel it before opening this file.") }
+        guard let store, processes != nil else { throw PortsideError.persistence("The library is unavailable.") }
         let bottle = try store.requireBottle(id: bottleID)
         guard bottle.initialized else { throw PortsideError.commandFailed("Initialize this bottle before opening a Windows app.") }
-        let directory = try store.bottleURL(for: bottle)
+        _ = try store.bottleURL(for: bottle)
         try PEExecutable.validate(url: url)
-        let run = try processes.run(bottle: bottle, bottleURL: directory, executableURL: url,
-                                    kind: "Open \(url.lastPathComponent)")
-        selected = bottleID
-        showLog(run.logURL)
-        if remember {
-            do {
-                try store.registerApp(name: url.deletingPathExtension().lastPathComponent,
-                                      executableURL: url, bottleID: bottleID)
-                sync()
-            } catch {
-                // The app is already running. Close the picker and report the save failure,
-                // rather than offering a Run retry that would start another copy.
-                self.error = "The app started, but its library entry could not be saved. \(error.localizedDescription)"
-            }
-        }
+        requestWindowsLaunch(WindowsLaunchRequest(bottle: bottle, executableURL: url,
+                                                  kind: "Open \(url.lastPathComponent)", remember: remember))
     }
 
     func prepareExternalBottleSetup() {
@@ -164,9 +154,16 @@ struct ExternalOpenRequest {
 
     func sheetDidDismiss() {
         sheetIsPresented = false
+        if let presentedCompatibilityLaunchID {
+            if compatibilityLaunch?.id == presentedCompatibilityLaunchID { compatibilityLaunch = nil }
+            self.presentedCompatibilityLaunchID = nil
+        }
+        sheet = nil
         externalOpen = nil
         refreshLibrary()
-        if let next = sheetAfterExternalOpen {
+        if compatibilityLaunch != nil {
+            presentPendingCompatibilityLaunch()
+        } else if let next = sheetAfterExternalOpen {
             sheetAfterExternalOpen = nil
             sheet = next
         } else {

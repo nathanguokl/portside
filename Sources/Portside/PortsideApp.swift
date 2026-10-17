@@ -27,7 +27,7 @@ struct PortsideApp: App {
 }
 
 enum EditorSheet: String, Identifiable {
-    case newBottle, rename, register, runtime, settings, openExecutable
+    case newBottle, rename, register, runtime, settings, openExecutable, compatibilityLaunch
     var id: String { rawValue }
 }
 
@@ -42,6 +42,8 @@ enum EditorSheet: String, Identifiable {
     let processes: WineProcessManager?
     private let runtimeValidator: RuntimeValidator
     let installedAppScanner: InstalledAppScanner
+    let compatibilitySetup: CompatibilitySetup
+    var compatibilitySetupBottleID: UUID?
     let automaticDiscoveryEnabled: Bool
     var installedDiscoveryTask: Task<Void, Never>?
     var installedDiscoveryGeneration = 0
@@ -56,6 +58,8 @@ enum EditorSheet: String, Identifiable {
     @Published var error: String? { didSet { if error == nil { resumeFileOpening() } } }
     @Published var activity: String? { didSet { if activity == nil { resumeFileOpening() } } }
     @Published var externalOpen: ExternalOpenRequest?
+    @Published var compatibilityLaunch: CompatibilityLaunchRequest?
+    var presentedCompatibilityLaunchID: UUID?
     @Published var isDefaultExecutableHandler = false
     @Published var settingDefaultExecutableHandler = false
     @Published private(set) var deletionTarget: Bottle?
@@ -68,7 +72,7 @@ enum EditorSheet: String, Identifiable {
     var sheetIsPresented = false
     var sheetAfterExternalOpen: EditorSheet?
     @Published var logURL: URL?
-    @Published var logText = "Select a task below to view its log."
+    @Published var logText = "Select a task to view its log."
     @Published var runtimeStatus = "Checking Wine…"
     var bottle: Bottle? { state.bottles.first { $0.id == selected } }
     var busy: Bool { activity != nil }
@@ -78,11 +82,15 @@ enum EditorSheet: String, Identifiable {
          installedAppScanner: @escaping InstalledAppScanner = { bottle, url, apps in
              try InstalledAppDiscovery.discover(bottle: bottle, bottleURL: url, registeredApps: apps)
          },
+         compatibilitySetup: CompatibilitySetup? = nil,
          runtimeValidator: @escaping RuntimeValidator = { url, source in
              try await RuntimeManager.validate(wineURL: url, source: source)
          }) {
         self.runtimeValidator = runtimeValidator
         self.installedAppScanner = installedAppScanner
+        self.compatibilitySetup = compatibilitySetup ?? CompatibilitySetup(resourcesURL:
+            (Bundle.main.resourceURL ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources"))
+                .appendingPathComponent("Compatibility", isDirectory: true))
         self.automaticDiscoveryEnabled = startsBackgroundWork
         do {
             let s = try LibraryStore(rootURL: rootURL); store = s
@@ -93,7 +101,7 @@ enum EditorSheet: String, Identifiable {
             p.onCompletion = { [weak self] result in
                 guard let self else { return }
                 if !result.isSessionWatcher { self.showLog(result.logURL) }
-                if !result.succeeded { self.error = result.summary }
+                if result.failed, self.compatibilitySetupBottleID != result.bottleID { self.error = result.summary }
                 self.discoverAfterCompletion(result)
             }
             if startsBackgroundWork {
@@ -269,16 +277,12 @@ enum EditorSheet: String, Identifiable {
         return try operation()
     }
     func install() {
-        guard let b = bottle, let store, let processes,
+        guard let b = bottle,
               let exe = pickFile() else { return }
-        report {
-            let run = try processes.run(bottle: b, bottleURL: store.bottleURL(for: b), executableURL: exe,
-                                        kind: "Install \(exe.lastPathComponent)")
-            showLog(run.logURL)
-        }
+        requestWindowsLaunch(WindowsLaunchRequest(bottle: b, executableURL: exe, kind: "Install \(exe.lastPathComponent)"))
     }
     func launch(_ app: WindowsApp) {
-        guard let store, let processes else { return }
+        guard let store else { return }
         report {
             try store.refresh(); sync()
             guard let current = state.apps.first(where: { $0.id == app.id }) else {
@@ -287,9 +291,9 @@ enum EditorSheet: String, Identifiable {
             let b = try store.requireBottle(id: current.bottleID)
             guard b.initialized else { throw PortsideError.commandFailed("Initialize this bottle before opening a Windows app.") }
             selected = b.id
-            let run = try processes.run(bottle: b, bottleURL: store.bottleURL(for: b), executableURL: current.executableURL,
-                                        arguments: current.arguments, workingDirectory: current.workingDirectoryURL, kind: "Launch \(current.name)")
-            showLog(run.logURL)
+            requestWindowsLaunch(WindowsLaunchRequest(bottle: b, executableURL: current.executableURL,
+                                                      arguments: current.arguments, workingDirectory: current.workingDirectoryURL,
+                                                      kind: "Launch \(current.name)", appID: current.id))
         }
     }
     func stop(_ b: Bottle) {
@@ -341,6 +345,10 @@ enum EditorSheet: String, Identifiable {
         } catch { self.error = error.localizedDescription; return false }
     }
     func showLog(_ url: URL) { logURL = url; readLog() }
+    func clearLog() {
+        logURL = nil
+        logText = "Log cleared. Select a task to view its saved log."
+    }
     func readLog() {
         guard let url = logURL else { return }
         if let f = try? FileHandle(forReadingFrom: url) {
@@ -458,6 +466,7 @@ struct ContentView: View {
                                             .fixedSize()
                                             .disabled(m.busy)
                                         Menu {
+                                            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([app.executableURL]) }
                                             Button("Edit…") { m.editingApp = app; m.sheet = .register }
                                             Button("Remove from Library", role: .destructive) { m.report { try m.store?.deleteApp(id: app.id) } }
                                         } label: {
@@ -498,6 +507,10 @@ struct ContentView: View {
             case .runtime: RuntimeSheet()
             case .settings: BottleSettingsSheet()
             case .openExecutable: if let request = m.externalOpen { ExternalExecutableSheet(request: request) }
+            case .compatibilityLaunch:
+                if let request = m.compatibilityLaunch {
+                    CompatibilitySetupSheet(bottle: request.bottle, initialProfileID: request.profile.id, pendingLaunch: request)
+                }
             }
         }
         .onAppear {
@@ -554,11 +567,50 @@ struct ContentView: View {
                     .help(m.isRunning(b) ? "Stop this bottle’s Windows processes." : "No running processes detected. Use Refresh Status to check again.")
             }
             let running = m.processes?.running.filter { $0.bottleID == b.id } ?? []
-            ForEach(running) { p in Button { m.showLog(p.logURL) } label: { HStack { ProgressView().controlSize(.mini); Text(p.kind); Spacer(); Text("PID \(p.pid)").monospacedDigit().foregroundStyle(.secondary) } }.buttonStyle(.plain) }
+            ForEach(running) { p in
+                Button { m.showLog(p.logURL) } label: {
+                    HStack {
+                        Image(systemName: p.isSessionWatcher ? "desktopcomputer" : "circle.fill")
+                            .foregroundStyle(p.isSessionWatcher ? Color.secondary : .green)
+                            .imageScale(.small)
+                        Text(p.isSessionWatcher ? "Windows session active" : p.kind)
+                            .lineLimit(1).truncationMode(.tail)
+                        Spacer()
+                        if !p.isSessionWatcher { Text("Running").foregroundStyle(.secondary).fixedSize() }
+                        Text("PID \(p.pid)").monospacedDigit().foregroundStyle(.secondary).fixedSize()
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(p.isSessionWatcher ? "Wine is still active in this bottle. Click to view its log." : "This process is running. Click to view its log.")
+            }
+            if !running.isEmpty {
+                Text("These indicators show process activity. Check the Windows app’s window for installation or download progress.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             let finished = Array((m.processes?.completed.filter { $0.bottleID == b.id } ?? []).prefix(5))
-            ForEach(finished) { p in Button { m.showLog(p.logURL) } label: { HStack { Image(systemName: p.succeeded ? "checkmark.circle" : "exclamationmark.triangle").foregroundStyle(p.succeeded ? .green : .orange); Text(p.kind); Spacer(); Text("Exit \(p.exitCode)").foregroundStyle(.secondary) } }.buttonStyle(.plain) }
+            ForEach(finished) { p in
+                Button { m.showLog(p.logURL) } label: {
+                    HStack {
+                        Image(systemName: p.wasStopped ? "stop.circle" : p.succeeded ? "checkmark.circle" : "exclamationmark.triangle")
+                            .foregroundStyle(p.wasStopped ? Color.secondary : p.succeeded ? .green : .orange)
+                        Text(p.kind)
+                        Spacer()
+                        Text(p.wasStopped ? "Stopped" : p.timedOut ? "Timed out" : p.terminationSignal.map { "Signal \($0)" } ?? "Exit \(p.exitCode)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(p.summary)
+            }
             ScrollView { Text(m.logText).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(12) }.frame(height: 150).background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            HStack { Text("Logs stay on this Mac.").font(.caption).foregroundStyle(.secondary); Spacer(); Button("Open Log Folder") { if let u = m.store?.logsURL { NSWorkspace.shared.open(u) } } }
+            HStack {
+                Text("Logs stay on this Mac.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear Log") { m.clearLog() }
+                    .disabled(m.logURL == nil)
+                    .help("Clear the displayed output. Saved log files remain in the log folder.")
+                Button("Open Log Folder") { if let u = m.store?.logsURL { NSWorkspace.shared.open(u) } }
+            }
         }
     }
 }

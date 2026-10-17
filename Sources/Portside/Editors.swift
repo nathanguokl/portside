@@ -110,6 +110,8 @@ struct BottleSettingsSheet: View {
     @State private var debug = false
     @State private var locale: WineLocale?
     @State private var profileNote: String?
+    @State private var compatibilityTarget: Bottle?
+    @State private var settingsBottleID: UUID?
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Bottle Settings").font(.title2.bold())
@@ -123,9 +125,28 @@ struct BottleSettingsSheet: View {
             HStack { Button("Open Wine Configuration") { if m.configuration() { dismiss() } }; Button("Import Settings Profile…") { importProfile() } }
             if let profileNote { Text(profileNote).font(.caption).textSelection(.enabled) }
             Text("Profiles are optional JSON settings presets. Install any required application dependencies using its publisher’s installer inside the same bottle.").font(.caption).foregroundStyle(.secondary)
+            GroupBox("Optional compatibility") {
+                HStack {
+                    Text("Apply known graphics, font and language setup to this bottle.").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Compatibility Setup…") {
+                        if let id = settingsBottleID, let target = m.state.bottles.first(where: { $0.id == id }) {
+                            compatibilityTarget = target
+                        } else { profileNote = "This bottle was removed. Close Settings and select an existing bottle." }
+                    }.disabled(m.busy || settingsBottleID == nil)
+                }
+            }
             HStack { Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction); Spacer(); Button("Apply Settings") { if m.apply(BottleSettings(windowsVersion: windows, debugLogging: debug, locale: locale)) { dismiss() } }.keyboardShortcut(.defaultAction).disabled(m.busy || m.bottle.map { m.isRunning($0) } == true) }
         }.padding(26).frame(width: 530)
-        .onAppear { if let b = m.bottle { windows = b.settings.windowsVersion; debug = b.settings.debugLogging; locale = b.settings.locale } }
+        .onAppear { settingsBottleID = m.bottle?.id; reloadSettings() }
+        .sheet(item: $compatibilityTarget) { target in
+            CompatibilitySetupSheet(bottle: target, onApplied: reloadSettings).environmentObject(m)
+        }
+    }
+    private func reloadSettings() {
+        if let b = m.state.bottles.first(where: { $0.id == settingsBottleID }) {
+            windows = b.settings.windowsVersion; debug = b.settings.debugLogging; locale = b.settings.locale
+        }
     }
     func importProfile() {
         let p = NSOpenPanel(); p.allowedContentTypes = [.json]; p.allowsMultipleSelection = false

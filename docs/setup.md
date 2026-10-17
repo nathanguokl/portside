@@ -51,9 +51,17 @@ The app inside the DMG is ad-hoc signed, without Developer ID signing or notariz
 5. If the launcher is missing, use **Add Manually…**. Select the installed `.exe`, name it, and set its working directory. Enter **one launch argument per line**. Spaces within a line are part of that argument; do not add shell quotes. Save, then choose **Launch**.
 6. Quit and reopen Portside, then launch the saved entry again. Bottles, settings, runtime associations, executable paths, working directories, and arguments persist in the catalog.
 
-An installer or downloader entry can reopen its setup screen after installation. Use the installed program's launcher afterward. Likely setup tools have a **Setup** badge and appear below application entries. Discovery searches up to six folder levels inside the selected bottle's C: drive and filters common helpers; unusual layouts and console programs may need manual registration. It never automatically executes a discovered program.
+Installed Windows apps live inside their bottle, rather than appearing separately in the Mac Applications folder. In an app’s **…** menu, choose **Show in Finder** to reveal its executable. **Find Installed Apps** adds suggestions for executables not already saved; “No additional launchers found” means your existing entries remain listed below.
 
-**Activity & Logs** exposes process output and results. **Refresh Status** detects surviving Wine sessions. **Stop Bottle** stops the selected bottle's tracked launchers and Wine session; it is disabled when idle, busy, or showing a dialog. Quitting Portside leaves Windows applications running.
+An installer or downloader entry can reopen its setup screen after installation. Use the installed program's launcher afterward. Likely setup tools have a **Setup** badge and appear below application entries. Discovery searches up to six folder levels inside the selected bottle's C: drive and filters common helpers. Saving one executable does not hide other GUI executables in that folder; candidate labels include their executable name to distinguish them. Review each candidate: some applications need publisher-specific arguments or a different working directory. Unusual layouts and console programs may need manual registration. It never automatically executes a discovered program.
+
+**Activity & Logs** exposes process output and results. **Refresh Status** detects surviving Wine sessions. **Stop Bottle** stops the selected bottle's tracked launchers and Wine session; it is disabled when idle, busy, or showing a dialog. An intentional termination appears as **Stopped**, with the raw signal retained in its log. Unexpected signals and nonzero application exits remain failures. Quitting Portside leaves Windows applications running.
+
+**Clear Log** resets the displayed output and stops following that selected log. Saved diagnostic files remain available through **Open Log Folder**; select an activity again to reopen its log.
+
+**Running** and **Windows session active** describe live processes, not installation or download progress. They remain visible while the Windows application or its background session is open. Check the Windows application's own window for progress; elapsed time alone does not establish that it is hung.
+
+A downloader can close after starting a separate installer. Its own exit code does not describe every process in the bottle. If the Windows installer is still extracting files, let it finish before reopening the downloader. Portside retains nonzero launcher codes for diagnostics and explains this possible handoff; it does not treat every nonzero exit as successful installation.
 
 The bottle menu provides **Rename…**, **Show Files**, and **Delete Bottle…**. Deletion confirms a captured bottle, stops it, validates its managed directory and ownership marker, then removes its files and library entries. Removing an entry from the app library only removes its shortcut; use the Windows application's uninstaller to uninstall software.
 
@@ -86,7 +94,17 @@ Stop the bottle before changing settings. **Settings** offers Windows 7, 10, or 
 }
 ```
 
-`name`, `windowsVersion`, and `debugLogging` are required; `notes` is optional. The Windows values are `win7`, `win10`, and `win11`. Profiles do not run scripts or install dependencies. The generic workflow requires no profile.
+`name`, `windowsVersion`, and `debugLogging` are required; `notes` is optional. The Windows values are `win7`, `win10`, and `win11`. These imported settings presets do not run scripts or install dependencies. The generic workflow requires no profile.
+
+## Known-app compatibility setup
+
+Opening or launching a recognized executable can offer **Set Up & Run** before Wine starts. Recognition uses exact SHA256 fingerprints from the bundled data-only compatibility profiles; it does not send executables to a server or guess requirements from a filename. Initially this covers the tested R2Beat downloader 1.0.0. A changed publisher build may not match. Unknown files continue through the generic Wine workflow.
+
+Choose a bottle, review the recommendation, then choose **Set Up & Run**. The optional R2Beat setup installs the pinned DXVK D3D10/11 component and Noto Chinese font in that bottle, selects Windows 10 and Simplified Chinese, and then runs the original executable. Stop the bottle before applying setup. You can also open **Settings → Compatibility Setup** manually. A configured bottle does not need setup before every launch.
+
+The app checks for **Python 3.9 or newer** in standard installation locations and offers the [official Python macOS downloads](https://www.python.org/downloads/macos/) if it is missing. Python and Wine are separate dependencies. A release containing the optional data pack can apply it without downloading the graphics/font files. A source build without the pack explains how to supply one; build it with `bash scripts/build-compatibility-pack.sh` before rebuilding the app. Only the app's bundled helpers execute; selected pack folders provide data.
+
+Setup logs are saved in Portside's log directory. Each helper validates the managed bottle and pinned component bytes before changing files and preserves component provenance. If a later step fails, successfully installed earlier components may remain; the error identifies the incomplete step. Fix that problem before retrying. This setup reproduces the recorded downloader configuration. It does not establish that R2Beat's installed .NET launcher, login, anti-cheat or gameplay works.
 
 ## Data and troubleshooting
 
@@ -106,8 +124,9 @@ Back up the catalog and bottle directories together while their processes are st
 | Missing runtime | Select a complete macOS runtime in Runtime Setup; check Rosetta on Apple silicon. |
 | Invalid executable | Choose an actual Intel Windows executable rather than a DLL, ARM binary, or renamed document. |
 | Failed installer or launch | Open its log, verify the executable and working directory still exist, and check publisher dependencies. Enable verbose diagnostics if needed. |
+| Wine Mono native crash | The error includes the raw Wine exit code and log path. Mono's banner has no stack and does not show a missing .NET install. On Apple silicon first check whether the **runtime** can run any 32-bit .NET program with the [32-bit probe](recipes/r2beat.md#qualify-the-runtime-with-a-32-bit-net-probe). Gcenx Stable 11.0_1 cannot: choose another runtime, because Mono or Framework reinstalls and graphics/font setup do not help. If the probe passes, stop the bottle and inspect the application's declared .NET target in a separate copy. For R2Beat, see the [recipe and current blocker](recipes/r2beat.md). |
 | Running status looks stale | Choose Refresh Status. Portside also refreshes on activation. A launcher waiting for macOS consent still counts as running. |
 | Stop fails | Inspect the shutdown-confirmation log and selected runtime. The provisional stop request may return 1 for an idle prefix; successful confirmation is required. |
 | Initialization fails | Resolve the runtime/dependency error from its log, then retry initialization. |
 
-A successful launcher exit does not prove that every application feature works. Read [compatibility.md](compatibility.md) for the observed results and unresolved R2Beat launcher failure.
+A successful launcher exit does not prove that every application feature works. Read [compatibility.md](compatibility.md) for the observed results and unresolved R2Beat startup failures.

@@ -22,6 +22,7 @@ import Darwin
         let role: CommandRole
         var visible: Bool
         var timedOut = false
+        var requestedStopSignals = Set<Int32>()
         var timeoutTask: Task<Void, Never>?
         var waiters: [CheckedContinuation<ProcessResult?, Never>] = []
         init(process: Process, handle: FileHandle, record: RunningWineProcess,
@@ -108,23 +109,31 @@ import Darwin
         let watchers = discardStatusWatchers(bottleID: bottle.id)
         await waitForTermination(watchers, seconds: 2)
         for entry in watchers where !entry.process.isRunning {
-            finish(id: entry.record.id, exitCode: entry.process.terminationStatus)
+            finish(id: entry.record.id, process: entry.process)
         }
         return result
     }
 
     private func stopTrackedLaunchers(bottleID: UUID) async throws {
         let launchers = entries.values.filter { $0.bottle.id == bottleID && !$0.monitor && $0.role == .standard }
-        for entry in launchers where entry.process.isRunning { entry.process.terminate() }
+        for entry in launchers where entry.process.isRunning {
+            // Keep intent on the entry: its termination callback may arrive after
+            // Stop Bottle returns. Already exited processes retain their real failure.
+            entry.requestedStopSignals.insert(SIGTERM)
+            entry.process.terminate()
+        }
         await waitForTermination(launchers, seconds: 1)
-        for entry in launchers where entry.process.isRunning { kill(entry.process.processIdentifier, SIGKILL) }
+        for entry in launchers where entry.process.isRunning {
+            entry.requestedStopSignals.insert(SIGKILL)
+            kill(entry.process.processIdentifier, SIGKILL)
+        }
         await waitForTermination(launchers, seconds: 2)
         guard launchers.allSatisfy({ !$0.process.isRunning }) else {
             throw PortsideError.commandFailed("Could not stop all launchers in this bottle. Its processes may still be running; inspect their logs and retry Stop Bottle before deleting it.")
         }
         // Consume any termination callback still queued on the main actor before
         // removing the stop guard or permitting bottle deletion.
-        for entry in launchers { finish(id: entry.record.id, exitCode: entry.process.terminationStatus) }
+        for entry in launchers { finish(id: entry.record.id, process: entry.process) }
     }
 
     private func waitForTermination(_ entries: [Entry], seconds: TimeInterval) async {
@@ -192,7 +201,8 @@ import Darwin
         guard let result = await waitForExit(id: record.id) else {
             throw PortsideError.commandFailed("The process result was unavailable. Inspect \(record.logURL.path).")
         }
-        guard !result.timedOut, acceptedExitCodes.contains(result.exitCode) else {
+        guard !result.timedOut, !result.wasStopped, result.terminationSignal == nil,
+              acceptedExitCodes.contains(result.exitCode) else {
             throw PortsideError.commandFailed("\(result.summary) Log: \(result.logURL.path)")
         }
         return result
@@ -222,29 +232,41 @@ import Darwin
         }
         let handle = try FileHandle(forWritingTo: logURL)
         let runtime = bottle.runtime
+        let environment = RuntimeManager.environment(runtime: runtime, bottleURL: bottleURL, settings: bottle.settings)
+        // Record effective compatibility controls, never the entire inherited environment
+        // (which can contain credentials). Missing listed controls were unset for the child.
+        let diagnosticKeys: Set<String> = ["WINEPREFIX", "WINEARCH", "WINEDEBUG", "PATH", "LANG", "LC_ALL",
+                                           "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
+                                           "MVK_CONFIG_LOG_LEVEL", "MONO_ENV_OPTIONS", "MONO_PATH",
+                                           "MONO_CFG_DIR", "DOTNET_ROOT", "COMPLUS_Version"]
+        let diagnosticEnvironment = environment.filter { diagnosticKeys.contains($0.key) }
         let metadata: [String: Any] = ["kind": kind, "bottleID": bottle.id.uuidString, "bottle": bottle.name,
                                       "prefix": bottleURL.path, "runtime": runtime.version, "runtimeSource": runtime.source,
                                       "command": command.path, "arguments": arguments,
-                                      "workingDirectory": workingDirectory?.path ?? bottleURL.path]
+                                      "workingDirectory": workingDirectory?.path ?? bottleURL.path,
+                                      "environment": diagnosticEnvironment,
+                                      "bottleSettings": ["windowsVersion": bottle.settings.windowsVersion.rawValue,
+                                                         "debugLogging": bottle.settings.debugLogging,
+                                                         "locale": bottle.settings.locale?.rawValue ?? "system"]]
         let metadataData = try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         handle.write(Data("Portside process started \(startedAt)\n".utf8)); handle.write(metadataData); handle.write(Data("\n--- Wine output ---\n".utf8))
         let process = Process()
         process.executableURL = command
         process.arguments = arguments
-        process.environment = RuntimeManager.environment(runtime: runtime, bottleURL: bottleURL, settings: bottle.settings)
+        process.environment = environment
         process.currentDirectoryURL = workingDirectory ?? bottleURL
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = handle; process.standardError = handle
         process.terminationHandler = { [weak self] process in
-            let exitCode = process.terminationStatus
-            DispatchQueue.main.async { self?.finish(id: id, exitCode: exitCode) }
+            DispatchQueue.main.async { self?.finish(id: id, process: process) }
         }
         do { try process.run() }
         catch {
             handle.write(Data("\nFailed to start: \(error.localizedDescription)\n".utf8)); try? handle.close()
             throw PortsideError.commandFailed("Could not start \(kind.lowercased()): \(error.localizedDescription). Check the runtime, Rosetta, and the log at \(logURL.path).")
         }
-        let record = RunningWineProcess(id: id, bottleID: bottle.id, kind: kind, logURL: logURL, startedAt: startedAt, pid: process.processIdentifier)
+        let record = RunningWineProcess(id: id, bottleID: bottle.id, kind: kind, logURL: logURL,
+                                        startedAt: startedAt, pid: process.processIdentifier, isSessionWatcher: monitor)
         // Silent session probes stay out of `running` until they prove a session is alive.
         let entry = Entry(process: process, handle: handle, record: record,
                           bottle: bottle, bottleURL: bottleURL, monitor: monitor, visible: !monitor, role: role)
@@ -264,39 +286,49 @@ import Darwin
         return record
     }
 
-    private func finish(id: UUID, exitCode: Int32) {
+    private func finish(id: UUID, process: Process) {
         guard let entry = entries.removeValue(forKey: id) else { return }
         entry.timeoutTask?.cancel()
+        let exitCode = process.terminationStatus
+        let signal = process.terminationReason == .uncaughtSignal ? exitCode : nil
+        let wasStopped = !entry.timedOut && signal.map(entry.requestedStopSignals.contains) == true
         let finishedAt = Date()
-        let summary: String
+        let statusDescription = signal.map { "signal \($0)" } ?? "Wine exit code \(exitCode)"
+        var summary: String
         if entry.role == .stopConfirmation {
             if entry.timedOut { summary = "Timed out confirming bottle shutdown. Processes may still be running. Inspect the log and check the selected Wine runtime before retrying Stop Bottle." }
-            else if exitCode == 0 { summary = "Bottle is stopped." }
-            else { summary = "Could not confirm bottle shutdown (Wine exit code \(exitCode)). Inspect the log and check the selected Wine runtime before retrying Stop Bottle." }
+            else if exitCode == 0 && signal == nil { summary = "Bottle is stopped." }
+            else { summary = "Could not confirm bottle shutdown (\(statusDescription)). Inspect the log and check the selected Wine runtime before retrying Stop Bottle." }
         }
         else if entry.role == .stopRequest {
             if entry.timedOut { summary = "The Wine stop request timed out. Inspect the log and check the selected Wine runtime." }
-            else if exitCode == 0 { summary = "Wine received the bottle stop request; shutdown must still be confirmed." }
-            else if exitCode == 1 { summary = "Wine did not signal an active server; shutdown must still be confirmed." }
-            else { summary = "Could not request bottle shutdown (Wine exit code \(exitCode)). Inspect the log and check the selected Wine runtime." }
+            else if exitCode == 0 && signal == nil { summary = "Wine received the bottle stop request; shutdown must still be confirmed." }
+            else if exitCode == 1 && signal == nil { summary = "Wine did not signal an active server; shutdown must still be confirmed." }
+            else { summary = "Could not request bottle shutdown (\(statusDescription)). Inspect the log and check the selected Wine runtime." }
         }
         else if entry.timedOut { summary = "\(entry.record.kind) timed out. Stop this bottle, inspect its log, then retry." }
+        else if wasStopped { summary = "\(entry.record.kind) stopped by request." }
+        else if let signal { summary = "\(entry.record.kind) was terminated by signal \(signal). Open its log for details." }
         else if exitCode == 0 { summary = "\(entry.record.kind) exited successfully." }
-        else { summary = "\(entry.record.kind) exited with code \(exitCode). Open its log for Wine errors and check required Windows dependencies." }
-        entry.handle.write(Data("\n--- Portside: exit code \(exitCode), timedOut=\(entry.timedOut), ended \(finishedAt) ---\n".utf8))
+        else { summary = "\(entry.record.kind) exited with code \(exitCode). An installer may continue in another Windows window after its launcher exits; check that window before retrying. Open its log for Wine errors and required Windows dependencies if installation has stopped." }
+        let reason = signal == nil ? "exit" : "signal"
+        entry.handle.write(Data("\n--- Portside: exit code \(exitCode), terminationReason=\(reason), stopRequested=\(!entry.requestedStopSignals.isEmpty), wasStopped=\(wasStopped), timedOut=\(entry.timedOut), ended \(finishedAt) ---\n".utf8))
         try? entry.handle.close()
+        if entry.role == .standard, !entry.monitor, !entry.timedOut, !wasStopped, signal == nil, exitCode != 0,
+           let diagnosis = WineFailureDiagnostics.monoCrashSummary(kind: entry.record.kind, exitCode: exitCode, logURL: entry.record.logURL) {
+            summary = diagnosis
+        }
         let result = ProcessResult(id: id, bottleID: entry.bottle.id, kind: entry.record.kind, logURL: entry.record.logURL,
                                    startedAt: entry.record.startedAt, finishedAt: finishedAt, exitCode: exitCode,
-                                   timedOut: entry.timedOut, summary: summary, isSessionWatcher: entry.monitor)
+                                   timedOut: entry.timedOut, summary: summary, isSessionWatcher: entry.monitor,
+                                   terminationSignal: signal, wasStopped: wasStopped)
         // A stop request is provisional; show the confirmed outcome instead.
         // Keep unexpected request failures and retained session watchers in the feed.
-        let provisionalStopRequest = entry.role == .stopRequest && !entry.timedOut && [0, 1].contains(exitCode)
+        let provisionalStopRequest = entry.role == .stopRequest && !entry.timedOut && signal == nil && [0, 1].contains(exitCode)
         if !provisionalStopRequest && (!entry.monitor || entry.visible) {
             completed.insert(result, at: 0)
             if completed.count > 100 { completed.removeLast(completed.count - 100) }
-            // Killing a selected bottle intentionally ends its Windows launchers.
-            // Keep their exit codes in the feed without raising launch-failure alerts.
-            if !stopping.contains(entry.bottle.id) || result.succeeded { onCompletion?(result) }
+            onCompletion?(result)
         }
         entry.waiters.forEach { $0.resume(returning: result) }
         publishRunning()
