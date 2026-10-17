@@ -102,7 +102,14 @@ Opening or launching a recognized executable can offer **Set Up & Run** before W
 
 Choose a bottle, review the recommendation, then choose **Set Up & Run**. The optional R2Beat setup installs the pinned DXVK D3D10/11 component and Noto Chinese font in that bottle, selects Windows 10 and Simplified Chinese, and then runs the original executable. Stop the bottle before applying setup. You can also open **Settings → Compatibility Setup** manually. A configured bottle does not need setup before every launch.
 
-The app checks for **Python 3.9 or newer** in standard installation locations and offers the [official Python macOS downloads](https://www.python.org/downloads/macos/) if it is missing. Python and Wine are separate dependencies. A release containing the optional data pack can apply it without downloading the graphics/font files. A source build without the pack explains how to supply one; build it with `bash scripts/build-compatibility-pack.sh` before rebuilding the app. Only the app's bundled helpers execute; selected pack folders provide data.
+The app checks for **Python 3.9 or newer** in standard installation locations and offers the [official Python macOS downloads](https://www.python.org/downloads/macos/) if it is missing. Python and Wine are separate dependencies. A release containing the optional data pack can apply it without downloading the graphics/font files. Default source builds omit the pack; to include it, run:
+
+```sh
+bash scripts/build-compatibility-pack.sh
+PORTSIDE_COMPATIBILITY_PACK_DIR="$PWD/.build/compatibility-pack" bash scripts/build.sh
+```
+
+Use the same environment variable with `bash scripts/package-dmg.sh` for a pack-enabled DMG. An app without an embedded pack can use a pack folder selected in the setup sheet. Only the app's bundled helpers execute; selected pack folders provide data.
 
 Setup logs are saved in Portside's log directory. Each helper validates the managed bottle and pinned component bytes before changing files and preserves component provenance. If a later step fails, successfully installed earlier components may remain; the error identifies the incomplete step. Fix that problem before retrying. This setup reproduces the recorded downloader configuration. It does not establish that R2Beat's installed .NET launcher, login, anti-cheat or gameplay works.
 
@@ -124,7 +131,7 @@ Back up the catalog and bottle directories together while their processes are st
 | Missing runtime | Select a complete macOS runtime in Runtime Setup; check Rosetta on Apple silicon. |
 | Invalid executable | Choose an actual Intel Windows executable rather than a DLL, ARM binary, or renamed document. |
 | Failed installer or launch | Open its log, verify the executable and working directory still exist, and check publisher dependencies. Enable verbose diagnostics if needed. |
-| Wine Mono native crash | The error includes the raw Wine exit code and log path. Mono's banner has no stack and does not show a missing .NET install. On Apple silicon first check whether the **runtime** can run any 32-bit .NET program with the [32-bit probe](recipes/r2beat.md#qualify-the-runtime-with-a-32-bit-net-probe). Gcenx Stable 11.0_1 cannot: choose another runtime, because Mono or Framework reinstalls and graphics/font setup do not help. If the probe passes, stop the bottle and inspect the application's declared .NET target in a separate copy. For R2Beat, see the [recipe and current blocker](recipes/r2beat.md). |
+| Wine Mono native crash | Open the saved log and check the application's .NET requirements and runtime compatibility. The banner alone does not identify a missing Framework or its cause. Test runtime or dependency changes in a separate bottle; the optional graphics/font setup does not install .NET. See [recorded limits](compatibility.md). |
 | Running status looks stale | Choose Refresh Status. Portside also refreshes on activation. A launcher waiting for macOS consent still counts as running. |
 | Stop fails | Inspect the shutdown-confirmation log and selected runtime. The provisional stop request may return 1 for an idle prefix; successful confirmation is required. |
 | Initialization fails | Resolve the runtime/dependency error from its log, then retry initialization. |

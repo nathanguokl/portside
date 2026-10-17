@@ -34,6 +34,7 @@ swift scripts/make-dmg-background.swift Sources/Portside/Resources/Branding/port
 xcrun clang -fobjc-arc -Wno-deprecated-declarations -framework Foundation -framework CoreServices \
     scripts/make-dmg-layout.m -o "$TEMPORARY/make-dmg-layout"
 
+# Optional compatibility sources and licenses can exceed the fixed 64 MB image.
 PORTSIDE_STAGING_KB="$(du -sk "$STAGING" | awk '{print $1}')"
 PORTSIDE_IMAGE_MB="$(( (PORTSIDE_STAGING_KB * 13 / 10 + 16384 + 1023) / 1024 ))"
 if [ "$PORTSIDE_IMAGE_MB" -lt 64 ]; then PORTSIDE_IMAGE_MB=64; fi

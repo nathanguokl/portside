@@ -40,7 +40,7 @@ To exercise the optional compatibility helpers with real Wine, first build the d
 
 ```sh
 bash scripts/build-compatibility-pack.sh
-bash scripts/build.sh
+PORTSIDE_COMPATIBILITY_PACK_DIR="$PWD/.build/compatibility-pack" bash scripts/build.sh
 PORTSIDE_TEST_WINE="$HOME/Library/Application Support/Portside/Runtimes/Wine Stable.app/Contents/Resources/wine/bin/wine" \
 PORTSIDE_TEST_COMPATIBILITY_RESOURCES="$PWD/dist/Portside.app/Contents/Resources/Compatibility" \
   swift test --filter RealCompatibilityIntegrationTests
@@ -56,11 +56,18 @@ Release outputs:
 | `bash scripts/package-dmg.sh` | Rebuilt app, `dist/Portside-VERSION-macOS-ARCH.dmg`, and checksum sidecar |
 | `python3 scripts/package-source.py` | Public source only in `dist/Portside-VERSION-source.zip`, and checksum sidecar |
 | `bash scripts/build-dxvk-compat.sh` | Optional `.build/dxvk-compat/component/` and source-inclusive component archive in `dist/` |
-| `bash scripts/build-compatibility-pack.sh` | Optional graphics/font data pack for subsequent app/DMG builds |
+| `bash scripts/build-compatibility-pack.sh` | Optional graphics/font data pack at `.build/compatibility-pack/` |
 
 `build.sh` copies the Info.plist, icon, resource bundle, MIT license and dependency notice into the app, then ad-hoc signs it. Builds use the host architecture. The DMG script rebuilds the app before packaging; avoid copying `dist/Portside.app` while that script runs. Developer ID signing, notarization, and universal builds are not configured.
 
-Compatibility profile metadata and trusted Python helper source are bundled by the app build. A generated compatibility data pack is optional and remains outside the tracked source tree. The native runner discovers a suitable Python without a shell, executes only the bundled helper scripts with argument arrays, captures bounded output to a saved log, and reports partial installation honestly. The helpers enforce their pinned payload hashes, bottle ownership and stopped-state checks. Exact executable fingerprints select recommendations; filename heuristics do not select component installs. Python is not needed for the generic install-and-launch workflow.
+Compatibility profile metadata and trusted Python helper source are bundled by the app build. A generated compatibility data pack is optional and remains outside the tracked source tree. Default app and DMG builds omit it, even when a previously built pack exists. Select the pack explicitly for either output:
+
+```sh
+PORTSIDE_COMPATIBILITY_PACK_DIR="$PWD/.build/compatibility-pack" bash scripts/build.sh
+PORTSIDE_COMPATIBILITY_PACK_DIR="$PWD/.build/compatibility-pack" bash scripts/package-dmg.sh
+```
+
+The native runner discovers a suitable Python without a shell, executes only the bundled helper scripts with argument arrays, captures bounded output to a saved log, and reports partial installation honestly. The helpers enforce their pinned payload hashes, bottle ownership and stopped-state checks. Exact executable fingerprints select recommendations; filename heuristics do not select component installs. Python is not needed for the generic install-and-launch workflow.
 
 Run `python3 scripts/package-source.py --list` to review source archive inputs. The packager uses an explicit allowlist, excludes local history, artifacts, environment/signing files and compiled runtimes, and never follows symbolic links. Entries use sorted paths and fixed timestamps/permissions; unchanged inputs produce identical ZIPs with the same Python/zlib implementation. Application icons and branding assets are included as source inputs.
 
@@ -109,6 +116,8 @@ Successful operations emit JSON. Process commands emit separate started/finished
 | `PORTSIDE_TEST_WINE` | Wine launcher for opt-in real-Wine tests |
 | `PORTSIDE_WINE_UI_BUNDLE` | Optional automation-only identity wrapper; leave unset for ordinary use |
 | `PORTSIDE_DXVK_BUILD_DIR` | Optional component build/download directory; defaults to `.build/dxvk-compat` |
+| `PORTSIDE_COMPATIBILITY_PACK_DIR` | Explicit data-pack input for app/DMG builds; unset omits the pack |
+| `PORTSIDE_TEST_COMPATIBILITY_RESOURCES` | Built app's Compatibility resource directory for the opt-in helper integration test |
 
 For a temporary CLI catalog:
 

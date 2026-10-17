@@ -32,7 +32,7 @@ final class FailureDiagnosticsTests: XCTestCase {
         return (WineProcessManager(logsURL: store.logsURL), store, bottle, try executable(in: root))
     }
 
-    @MainActor func testCompleteMonoReportExplainsRuntimeFailureWithoutChangingExitOutcome() async throws {
+    @MainActor func testCompleteMonoReportOffersInvestigationWithoutChangingExitOutcome() async throws {
         let (manager, store, bottle, exe) = try fixture()
         defer { manager.shutdownStatusWatchers() }
         for mode in ["mono", "header", "fatal", "plain", "ok"] {
@@ -49,20 +49,12 @@ final class FailureDiagnosticsTests: XCTestCase {
             if mode == "mono" {
                 XCTAssertTrue(result.summary.contains("Wine exit code 3"))
                 XCTAssertTrue(result.summary.contains("Log: \(result.logURL.path)"))
-                // The banner has no stack: say so rather than blaming the application or a missing install.
-                XCTAssertTrue(result.summary.contains("does not show which component failed or that .NET is missing"))
-                // The traced cause class: a runtime that cannot run any 32-bit .NET program (Gcenx#160).
-                XCTAssertTrue(result.summary.contains("unable to run 32-bit .NET programs at all"))
-                XCTAssertTrue(result.summary.contains("Gcenx/macOS_Wine_builds#160"))
-                XCTAssertTrue(result.summary.contains("reinstalling .NET or Mono cannot fix it"))
-                // A concrete discriminating check, then a decision for each outcome.
-                XCTAssertTrue(result.summary.contains("stop this bottle"))
-                XCTAssertTrue(result.summary.contains("disposable copy"))
-                XCTAssertTrue(result.summary.contains("minimal 32-bit .NET program"))
-                XCTAssertTrue(result.summary.contains("mcs.exe"))
-                XCTAssertTrue(result.summary.contains("choose a different Wine runtime"))
-                XCTAssertTrue(result.summary.contains("declared .NET target"))
-                // Superseded advice: neither removing Mono nor installing a Framework repairs this failure.
+                // A generic crash report must not diagnose one application's runtime failure.
+                XCTAssertTrue(result.summary.contains("does not identify the failed component or show that .NET is missing"))
+                XCTAssertTrue(result.summary.contains("application's .NET requirements"))
+                XCTAssertTrue(result.summary.contains("separate bottle"))
+                XCTAssertFalse(result.summary.contains("Gcenx"))
+                XCTAssertFalse(result.summary.contains("cannot fix"))
                 XCTAssertFalse(result.summary.contains("remove Wine Mono"))
                 XCTAssertFalse(result.summary.contains("Microsoft .NET Framework version"))
                 XCTAssertFalse(result.summary.contains("Modern .NET"))

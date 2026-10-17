@@ -5,8 +5,8 @@
 <key>CFBundleIdentifier</key><string>dev.portside.mac</string>
 <key>CFBundleName</key><string>Portside</string>
 <key>CFBundleDisplayName</key><string>Portside</string>
-<key>CFBundleShortVersionString</key><string>0.1.10</string>
-<key>CFBundleVersion</key><string>11</string>
+<key>CFBundleShortVersionString</key><string>0.1.6</string>
+<key>CFBundleVersion</key><string>7</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>Portside</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>

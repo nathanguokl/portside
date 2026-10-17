@@ -30,7 +30,14 @@ bash scripts/package-dmg.sh
 
 Open the generated `dist/Portside-<version>-macOS-<architecture>.dmg`, drag **Portside** onto **Applications**, then eject the image. A matching SHA256 file is generated. Wine is installed separately.
 
-To include the optional tested graphics/font data pack in a release, first run `bash scripts/build-compatibility-pack.sh`, then package the DMG. A normal source build does not require this pack or its component build toolchain. The release app includes the component licenses and corresponding graphics source archive; see [THIRD_PARTY.md](THIRD_PARTY.md).
+The default app and DMG omit the optional graphics/font data pack. To include the tested downloader setup, build the pack and select it explicitly:
+
+```sh
+bash scripts/build-compatibility-pack.sh
+PORTSIDE_COMPATIBILITY_PACK_DIR="$PWD/.build/compatibility-pack" bash scripts/package-dmg.sh
+```
+
+The pack is optional; a normal source build does not require its component build toolchain. A pack-enabled app includes the component licenses and corresponding graphics source archive; see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Documentation
 
@@ -62,7 +69,7 @@ Generated `.build/` and `dist/` outputs are ignored. Local downloads, raw verifi
 
 Bottles separate Windows configuration and data; **they are not a security boundary**. Windows programs run with the logged-in user's access. Run software you trust.
 
-Games, anti-cheat, DRM, Windows drivers, Microsoft Store packages and arbitrary .NET applications are outside the verified desktop workflow. The optional R2Beat downloader setup renders and downloads. The installed R2Beat launcher fails on the configured Stable runtime, which cannot run any 32-bit .NET program on Apple silicon. An experimental runtime completed the publisher update, but the updated game still crashed after requesting a missing Wine API; no responsive game window has been verified. See [compatibility](docs/compatibility.md) and the [runtime investigation](docs/r2beat-runtime-investigation.md) before relying on it.
+Games, anti-cheat, DRM, Windows drivers, Microsoft Store packages and arbitrary .NET applications are outside the verified desktop workflow. The optional R2Beat setup was verified only for its downloader's rendering, folder selection, transfer and pause. Its installed launcher and game remain unsupported: no usable launcher or game window was verified after runtime and native .NET comparisons. See [compatibility](docs/compatibility.md).
 
 ## License
 
