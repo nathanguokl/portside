@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640" fill="none">
+  <title>Portside logo</title>
+  <desc>A blue P with a single cyan harbor wave. Transparent background.</desc>
+  <path transform="translate(0 -20)" fill-rule="evenodd" clip-rule="evenodd" d="M134 464V114C134 96.327 148.327 82 166 82H347C470 82 544 148 544 255C544 362 470 428 347 428H252V464C252 473.941 243.941 482 234 482H152C142.059 482 134 473.941 134 464ZM252 192V318H342C396 318 426 296 426 255C426 214 396 192 342 192H252Z" fill="#0876EF"/>
+  <path transform="translate(0 20)" d="M102 537C173 492 224 492 299 525C375 558 438 558 538 500" stroke="#18B8DA" stroke-width="54" stroke-linecap="round"/>
+</svg>

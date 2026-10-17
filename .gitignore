@@ -1,0 +1,36 @@
+# Local downloads, raw verification, recovery backups and scratch work.
+/.artifacts/
+/.downloads/
+/verification/
+
+# SwiftPM, app bundles and release packages.
+/.build/
+/dist/
+/DerivedData/
+.swiftpm/xcode/xcuserdata/
+xcuserdata/
+*.xcuserstate
+
+# macOS metadata.
+.DS_Store
+._*
+
+# Local Python tooling.
+__pycache__/
+*.py[cod]
+/.venv/
+
+# Local environment and signing credentials.
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.mobileprovision
+
+# A diagnostic data root must not become part of the source tree.
+/Bottles/
+/Logs/
+/Runtimes/
+/library.json
+/.library.lock

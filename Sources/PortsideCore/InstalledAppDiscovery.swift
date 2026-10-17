@@ -1,0 +1,174 @@
+import Foundation
+
+public struct InstalledAppCandidate: Identifiable, Equatable, Sendable {
+    public var id: String { executableURL.path }
+    public let name: String
+    public let executableURL: URL
+    public let workingDirectoryURL: URL
+    public let bottleID: UUID
+
+    public init(name: String, executableURL: URL, workingDirectoryURL: URL, bottleID: UUID) {
+        self.name = name
+        self.executableURL = executableURL.standardizedFileURL.resolvingSymlinksInPath()
+        self.workingDirectoryURL = workingDirectoryURL.standardizedFileURL.resolvingSymlinksInPath()
+        self.bottleID = bottleID
+    }
+}
+
+/// A read-only search for reviewable GUI launchers, not a claim that an installer has finished.
+/// Call off the main actor with a bottle URL obtained from `LibraryStore.bottleURL(for:)`.
+/// Searches six folder levels in C:, excluding system and support folders. Manual registration
+/// remains available for user-profile installs, deeper layouts, console apps, and unusual launchers.
+public enum InstalledAppDiscovery {
+    struct Limits {
+        var entries = 12_000
+        var depth = 6
+        var candidates = 200
+        var seconds = 5.0
+    }
+    private struct Found {
+        let candidate: InstalledAppCandidate
+        let directory: URL
+        let score: Int
+    }
+    private static let systemFolders: Set<String> = ["windows", "users", "programdata", "$recycle.bin", "recovery"]
+    private static let supportFolders: Set<String> = [
+        "common files", "resources", "redist", "redistributables", "directx", "dxredist", "dotnet",
+        "installers", "cache", "caches", "temp", "tmp", "logs", "log", "crashdumps", "dumps",
+        "fonts", "locales", "translations", "lang", "cef", "cef32", "cef64", "gameguard",
+        "anticheat", "easyanticheat", "battleye", "thirdparty", "third_party", "3rdparty",
+        "support", "prerequisites", "dependencies", "content", "assets", "textures",
+        "internet explorer", "windows media player", "windows nt"
+    ]
+    private static let binaryFolders: Set<String> = ["bin", "binaries", "win32", "win64", "x86", "x64", "amd64"]
+    private static let containers: Set<String> = ["program files", "program files (x86)", "games", "applications"]
+
+    public static func discover(bottle: Bottle, bottleURL: URL,
+                                registeredApps: [WindowsApp]) throws -> [InstalledAppCandidate] {
+        try scan(bottle: bottle, bottleURL: bottleURL, registeredApps: registeredApps, limits: Limits())
+    }
+
+    static func scan(bottle: Bottle, bottleURL: URL, registeredApps: [WindowsApp],
+                     limits: Limits) throws -> [InstalledAppCandidate] {
+        guard bottle.initialized else { throw PortsideError.commandFailed("Initialize this bottle before looking for installed apps.") }
+        let files = FileManager.default
+        let prefix = bottleURL.standardizedFileURL.resolvingSymlinksInPath()
+        let drive = prefix.appendingPathComponent("drive_c", isDirectory: true)
+        guard bottleURL.isFileURL, isDirectoryWithoutLink(bottleURL), isDirectoryWithoutLink(drive),
+              drive.resolvingSymlinksInPath().deletingLastPathComponent() == prefix else {
+            throw PortsideError.unsafeBottle("The bottle's C: drive is missing or is a symbolic link. Its files were left untouched.")
+        }
+        let registered = registeredApps.filter { $0.bottleID == bottle.id }
+        let registeredPaths = Set(registered.map { $0.executableURL.standardizedFileURL.resolvingSymlinksInPath().path })
+        let registeredFolders = registered.compactMap { app -> URL? in
+            let executable = app.executableURL.standardizedFileURL.resolvingSymlinksInPath()
+            guard contains(executable, in: drive), !isHelper(executable) else { return nil }
+            let directory = installDirectory(for: executable, drive: drive)
+            return isContainer(directory, drive: drive) ? nil : directory
+        }
+        var queue = [(drive, 0)], cursor = 0, visited = 0
+        var groups: [String: Found] = [:]
+        let deadline = ContinuousClock.now.advanced(by: .seconds(limits.seconds))
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+        while cursor < queue.count {
+            try Task.checkCancellation()
+            let (directory, depth) = queue[cursor]; cursor += 1
+            guard directory == drive || (contains(directory, in: drive) && isDirectoryWithoutLink(directory)) else { continue }
+            guard let enumerator = files.enumerator(at: directory, includingPropertiesForKeys: Array(keys),
+                                                    options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]) else { continue }
+            var children: [(URL, Bool)] = []
+            while let child = enumerator.nextObject() as? URL {
+                let url = child.standardizedFileURL
+                try Task.checkCancellation()
+                guard ContinuousClock.now < deadline else { throw limitError("time") }
+                visited += 1
+                guard visited <= limits.entries else { throw limitError("file-count") }
+                guard let values = try? url.resourceValues(forKeys: keys), values.isSymbolicLink != true,
+                      contains(url, in: drive), url.resolvingSymlinksInPath() == url.standardizedFileURL else { continue }
+                if values.isDirectory == true { children.append((url, true)) }
+                else if values.isRegularFile == true { children.append((url, false)) }
+            }
+            // Visit each folder's files before descending, so large data trees cannot hide
+            // a neighboring launcher. Sort the breadth-first queue and tie breaks consistently.
+            for (url, isDirectory) in children.sorted(by: { $0.0.path < $1.0.path }) {
+                try Task.checkCancellation()
+                guard ContinuousClock.now < deadline else { throw limitError("time") }
+                if isDirectory {
+                    let name = url.lastPathComponent.lowercased()
+                    guard depth < limits.depth - 1, !(depth == 0 && systemFolders.contains(name)),
+                          !supportFolders.contains(name), !name.hasSuffix("_data"),
+                          !registeredFolders.contains(where: { $0 == url || contains(url, in: $0) }) else { continue }
+                    queue.append((url, depth + 1))
+                    continue
+                }
+                guard url.pathExtension.lowercased() == "exe", !isHelper(url), !registeredPaths.contains(url.path),
+                      !registeredFolders.contains(where: { contains(url, in: $0) }), isGUIExecutable(url) else { continue }
+                let group = installDirectory(for: url, drive: drive)
+                let name = isContainer(group, drive: drive) ? url.deletingPathExtension().lastPathComponent : group.lastPathComponent
+                let candidate = InstalledAppCandidate(name: name, executableURL: url,
+                                                       workingDirectoryURL: url.deletingLastPathComponent(), bottleID: bottle.id)
+                let item = Found(candidate: candidate, directory: group, score: score(url, directory: group))
+                let key = isContainer(group, drive: drive) ? candidate.id : group.path
+                if groups[key] == nil || item.score > groups[key]!.score { groups[key] = item }
+                guard groups.count <= limits.candidates else { throw limitError("candidate-count") }
+            }
+        }
+        let roots = Array(groups.values)
+        let result = roots.filter { item in
+            !roots.contains { other in
+                other.candidate.id != item.candidate.id && !isContainer(other.directory, drive: drive) &&
+                    contains(item.directory, in: other.directory)
+            }
+        }.map(\.candidate).sorted { $0.id < $1.id }
+        guard ContinuousClock.now < deadline else { throw limitError("time") }
+        return result
+    }
+
+    private static func contains(_ child: URL, in parent: URL) -> Bool {
+        let root = parent.pathComponents, path = child.pathComponents
+        return path.count > root.count && path.starts(with: root)
+    }
+    private static func isDirectoryWithoutLink(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeDirectory
+    }
+    private static func isContainer(_ directory: URL, drive: URL) -> Bool {
+        directory == drive || (directory.deletingLastPathComponent() == drive && containers.contains(directory.lastPathComponent.lowercased()))
+    }
+    private static func installDirectory(for executable: URL, drive: URL) -> URL {
+        var directory = executable.deletingLastPathComponent()
+        while directory != drive && binaryFolders.contains(directory.lastPathComponent.lowercased()) {
+            directory.deleteLastPathComponent()
+        }
+        return directory
+    }
+    private static func isHelper(_ url: URL) -> Bool {
+        let name = url.deletingPathExtension().lastPathComponent.lowercased()
+        return ["unins", "uninstall", "setup", "install", "redist", "vcredist", "dxsetup", "ndp"].contains(where: name.hasPrefix) ||
+            ["installer", "downloader", "crash", "helper", "subprocess", "vc_redist"].contains(where: name.contains) ||
+            ["update", "updater", "config", "configuration", "settings", "autorun", "elevate", "notification"].contains(name)
+    }
+    private static func score(_ url: URL, directory: URL) -> Int {
+        let name = url.deletingPathExtension().lastPathComponent.lowercased()
+        if name.contains("launcher") { return 100 }
+        if name.contains("patcher") { return 90 }
+        if name == directory.lastPathComponent.lowercased() { return 80 }
+        if ["game", "client", "main", "start", "play"].contains(name) { return 70 }
+        return 50
+    }
+    private static func isGUIExecutable(_ url: URL) -> Bool {
+        guard (try? PEExecutable.validate(url: url)) != nil, let file = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? file.close() }
+        guard let dos = try? file.read(upToCount: 64), dos.count == 64 else { return false }
+        let offset = UInt32(dos[60]) | UInt32(dos[61]) << 8 | UInt32(dos[62]) << 16 | UInt32(dos[63]) << 24
+        do {
+            try file.seek(toOffset: UInt64(offset) + 20)
+            let size = Array(try file.read(upToCount: 2) ?? Data())
+            guard size.count == 2, UInt16(size[0]) | UInt16(size[1]) << 8 >= 70 else { return false }
+            try file.seek(toOffset: UInt64(offset) + 24 + 68)
+            return Array(try file.read(upToCount: 2) ?? Data()) == [2, 0]
+        } catch { return false }
+    }
+    private static func limitError(_ kind: String) -> PortsideError {
+        .commandFailed("The installed-app search reached its \(kind) limit. Use Add Manually… to choose the app's executable.")
+    }
+}

@@ -1,0 +1,3 @@
+# Keep upstream notices and patch context byte-for-byte.
+third_party/dxvk-compat/toolchain-licenses/* -whitespace
+third_party/dxvk-compat/*.patch -whitespace

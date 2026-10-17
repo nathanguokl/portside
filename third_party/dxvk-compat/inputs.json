@@ -1,0 +1,30 @@
+{
+  "componentVersion": "1.10.3-portside1",
+  "upstreamRepository": "https://github.com/Gcenx/DXVK-macOS",
+  "upstreamTag": "v1.10.3-20230507-repack",
+  "upstreamCommit": "8f1e28deed3ad30802f7e1bdff428ec14e6e7817",
+  "source": {
+    "filename": "dxvk-macos-source-8f1e28d.tar.gz",
+    "url": "https://codeload.github.com/Gcenx/DXVK-macOS/tar.gz/8f1e28deed3ad30802f7e1bdff428ec14e6e7817",
+    "sha256": "b3fc4a0415b3e4cdfb40497bec191c10f183ec2eb498950aa1f638f176cb996b"
+  },
+  "binaries": {
+    "filename": "dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz",
+    "url": "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz",
+    "sha256": "acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477"
+  },
+  "patch": "wine-builtin-dxgi-d3d10.patch",
+  "license": "zlib/libpng; see LICENSE.dxvk",
+  "expectedDLLs": [
+    "x32/d3d10core.dll",
+    "x32/d3d11.dll",
+    "x64/d3d10core.dll",
+    "x64/d3d11.dll"
+  ],
+  "pinnedDLLSHA256": {
+    "x32/d3d10core.dll": "01e2b0890d25decbfe67babd74515944b355b85fe1881dfbad564cd6e5aadffc",
+    "x32/d3d11.dll": "f79d417f675d00008375eb4ea2318af6fcd0b27971d604d3cf345a0dcfa998a0",
+    "x64/d3d10core.dll": "e7c1a633fefcebae3803f015b5e4f267ace447c6517bef7b3e1d35f16a50363a",
+    "x64/d3d11.dll": "0ff0b0835dde29556bd01dfce7b1ae348d7f229cb1e1a37cc71ea1a028beeca4"
+  }
+}

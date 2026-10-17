@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Portside</string>
+<key>CFBundleIdentifier</key><string>dev.portside.mac</string>
+<key>CFBundleName</key><string>Portside</string>
+<key>CFBundleDisplayName</key><string>Portside</string>
+<key>CFBundleShortVersionString</key><string>0.1.6</string>
+<key>CFBundleVersion</key><string>7</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleIconFile</key><string>Portside</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSDesktopFolderUsageDescription</key><string>Portside uses Wine to open Windows apps and their supporting files from the Desktop folder.</string>
+<key>NSDocumentsFolderUsageDescription</key><string>Portside uses Wine to open Windows apps and their supporting files from the Documents folder.</string>
+<key>NSDownloadsFolderUsageDescription</key><string>Portside uses Wine to open Windows installers and their supporting files from the Downloads folder.</string>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+<key>CFBundleDocumentTypes</key><array><dict>
+<key>CFBundleTypeName</key><string>Windows application</string>
+<key>CFBundleTypeRole</key><string>Shell</string>
+<key>LSHandlerRank</key><string>Default</string>
+<key>LSItemContentTypes</key><array><string>com.microsoft.windows-executable</string></array>
+</dict></array>
+</dict></plist>

@@ -1,0 +1,6 @@
+{
+  "name": "Windows 10 desktop",
+  "windowsVersion": "win10",
+  "debugLogging": false,
+  "notes": "Generic desktop settings. No additional dependencies are installed by this profile."
+}
